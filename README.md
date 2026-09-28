@@ -72,7 +72,7 @@ SECRET_KEY=<generate one, see below>
 ACCESS_TOKEN_EXPIRE_MINUTES=30
 DEBUG=True
 API_PREFIX=/api
-DATABASE_URL=sqlite:///./travel.db
+DATABASE_URL=sqlite:///./database.db
 ALLOWED_ORIGINS=http://localhost:3000
 ```
 
