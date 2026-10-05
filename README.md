@@ -20,8 +20,14 @@ TravelAgentic is an AI-powered travel planner that helps budget-conscious colleg
 
 ### Datasets
 
-- 
-- 
+- DOT Consumer Airfare Report Table 6 (Departure, Arrival, Dates, Quarter (Q1, Q2, Q3, Q4), avg_price, lowest_price)
+- Kaggle Flight Prices (supplemental for V2)
+- Dotlas for Hotels
+
+# ML Model
+- This model will classify user queries on whether they are related to travel or not to avoid unnecessary LLM API costs.
+- Inputs: text
+- Outputs: True/False
 
 ## Getting Started
 
