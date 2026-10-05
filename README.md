@@ -6,17 +6,16 @@ TravelAgentic is an AI-powered travel planner that helps budget-conscious colleg
 
 ### Members
 
-| Name | Role | GitHub |
-|------|------|--------|
-|      |      |        |
-|      |      |        |
-|      |      |        |
-|      |      |        |
-|      |      |        |
-|      |      |        |
-|      |      |        |
-|      |      |        |
-|      |      |        |
+| Name |
+|------|
+| Arjun Agarwal|
+| Saatvik Palli |
+| Inigo Serrano     |
+| Tianyu(Wilson) Zhu      |
+| Gia Bao Ta     |
+| Ethan Guo     |
+| Duc Vo     |
+| Ethan Lin     |
 
 ### Datasets
 
@@ -24,7 +23,7 @@ TravelAgentic is an AI-powered travel planner that helps budget-conscious colleg
 - Kaggle Flight Prices (supplemental for V2)
 - Dotlas for Hotels
 
-# ML Model
+### ML Model
 - This model will classify user queries on whether they are related to travel or not to avoid unnecessary LLM API costs.
 - Inputs: text
 - Outputs: True/False
