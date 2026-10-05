@@ -1,4 +1,4 @@
-# Run from backend/: python3 services/flight_agent.py
+# Run from backend/: python3 services/duffel_client/nodes/call_api.py
 
 from pathlib import Path
 import sys

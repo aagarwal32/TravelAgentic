@@ -1,6 +1,6 @@
 # langgraph visualizer
-services/travel_agent.png
-services/flight_agent.png
+services/duffel_client/nodes/flights_agent.png
+services/duffel_client/nodes/travel_agent.png
 .chatgpt-auth/
 
 # Byte-compiled / optimized / DLL files

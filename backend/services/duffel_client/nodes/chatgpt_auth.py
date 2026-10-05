@@ -1,4 +1,6 @@
-"""Local, single-account ChatGPT OAuth. Credentials stay outside graph state.
+"""IGNORE THIS FILE
+
+Local, single-account ChatGPT OAuth. Credentials stay outside graph state.
 
 Official flow: https://developers.openai.com/siwc/token-sharing-open-source/sign-in
 """

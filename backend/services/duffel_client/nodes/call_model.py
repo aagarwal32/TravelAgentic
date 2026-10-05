@@ -1,4 +1,4 @@
-# Run from backend/: python3 services/travel_agent.py
+# Run from backend/: python3 services/duffel_client/nodes/call_model.py
 
 import argparse
 from pathlib import Path
