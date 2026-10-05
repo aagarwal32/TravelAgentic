@@ -1,5 +1,28 @@
 # SIGAIDA Agentic Travel Planner Project
 
+## Project Details
+
+TravelAgentic is an AI-powered travel planner that helps budget-conscious college students find the cheapest way to get where they're going. A user enters a trip, such as Chicago to New York, and the agent asks follow-up questions about budget, travel mode, rental cars, and activities. It then returns real, bookable flights, hotels, and rental cars from the Duffel API, along with charts showing which dates and months tend to be cheaper based on historical data. Behind the scenes, a LangGraph system coordinates specialized agents for historical price trends, live pricing, hotel preference matching, and a final evaluator that combines their results. Every price shown comes from live API data or the team's own historical database, never from the language model's guesswork.
+
+### Members
+
+| Name | Role | GitHub |
+|------|------|--------|
+|      |      |        |
+|      |      |        |
+|      |      |        |
+|      |      |        |
+|      |      |        |
+|      |      |        |
+|      |      |        |
+|      |      |        |
+|      |      |        |
+
+### Datasets
+
+- 
+- 
+
 ## Getting Started
 
 This guide walks you from a fresh machine to a running project. Commands are for macOS/Linux; Windows equivalents are noted where they differ.
