@@ -110,6 +110,50 @@ pip install -r requirements.txt       # if requirements.txt changed
 python scripts/download_datasets.py   # if new datasets were added
 ```
 
+## Local LangGraph prototype
+
+With the backend virtual environment activated, run from `backend/`:
+
+```bash
+pip install -r requirements.txt
+python services/travel_agent.py
+```
+
+The first run opens **Continue with ChatGPT** in your browser. Authorize
+ChatGPT plan usage, return to the terminal, choose an available model, and
+enter a message. The graph runs `START → call_model → END`, sends the message
+unchanged, prints the model's text, and exports `services/travel_agent.png`.
+PNG export uses an online Mermaid service; a rendering failure does not discard
+the model response.
+
+Authentication lives in `services/chatgpt_auth.py`, separately from the graph.
+Credentials are stored in the ignored `backend/.chatgpt-auth/` directory with
+owner-only permissions and refreshed before expiry. This is a single-account,
+single-process local prototype, not a shared hosted login service. You can
+repeat browser sign-in with `python services/chatgpt_auth.py`.
+
+You can skip the interactive model picker and input prompt:
+
+```bash
+python services/travel_agent.py --model <available-model-slug> --input "Hello!"
+```
+
+An eligible ChatGPT plan and authorization are required. See the
+[official sign-in flow](https://developers.openai.com/siwc/token-sharing-open-source/sign-in).
+
+### Flight search prototype
+
+The separate Duffel graph runs `START → call_api → END`. Set `DUFFEL_API_KEY`
+in `backend/.env`, then run from `backend/`:
+
+```bash
+python3 services/flight_agent.py
+```
+
+It uses the example Miami–Tampa route in `services/flight_agent.py` and prints
+the five lowest-priced returned offers. This graph uses Duffel credentials;
+the text-to-model graph uses ChatGPT OAuth. They are independent prototypes.
+
 ## Frontend
 
 _Coming soon._

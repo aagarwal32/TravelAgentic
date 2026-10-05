@@ -1,5 +1,7 @@
 # langgraph visualizer
 services/travel_agent.png
+services/flight_agent.png
+.chatgpt-auth/
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

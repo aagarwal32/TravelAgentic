@@ -1,83 +1,69 @@
-# run from backend/:  python -m services.travel_agent
+# Run from backend/: python3 services/travel_agent.py
 
+import argparse
 from pathlib import Path
 from typing import TypedDict
 
-import httpx
 from langgraph.graph import END, START, StateGraph
+from openai import OpenAI
 
-from core.config import settings
-
-
-# State: information passed through the graph.
-class FlightState(TypedDict):
-    origin: str
-    destination: str
-    date: str
-    api_result: list
+if __package__:
+    from .chatgpt_auth import choose_model, get_access_token
+else:
+    from chatgpt_auth import choose_model, get_access_token
 
 
-DUFFEL_URL = "https://api.duffel.com/air/offer_requests"
+class State(TypedDict):
+    input: str
+    output: str
+    model: str
 
 
-def call_api(state: FlightState) -> dict:
-    body = {
-        "data": {
-            "slices": [{
-                "origin": state["origin"],
-                "destination": state["destination"],
-                "departure_date": state["date"],
-            }],
-            "passengers": [{"type": "adult"}],
-            "cabin_class": "economy",
-        }
-    }
-    headers = {
-        "Authorization": f"Bearer {settings.DUFFEL_API_KEY}",
-        "Duffel-Version": "v2",
-        "Accept": "application/json",
-        "Content-Type": "application/json",
-    }
-
-    resp = httpx.post(DUFFEL_URL, params={"return_offers": "true"},
-                      json=body, headers=headers, timeout=30)
-    resp.raise_for_status()
-    offers = resp.json()["data"]["offers"]
-
-    offers.sort(key=lambda o: float(o["total_amount"]))
-    simplified = []
-    for o in offers[:5]:
-        first_slice = o["slices"][0]
-        simplified.append({
-            "airline": o["owner"]["name"],
-            "price": f'{o["total_amount"]} {o["total_currency"]}',
-            "stops": len(first_slice["segments"]) - 1,
-            "duration": first_slice["duration"],
-        })
-
-    print(f"[call_api] got {len(offers)} offers, kept {len(simplified)}")
-    return {"api_result": simplified}
+def call_model(state: State) -> dict:
+    """Send the input unchanged; collect the model's text as output."""
+    parts = []
+    completed = False
+    with OpenAI(api_key=get_access_token(), max_retries=0, timeout=60) as client:
+        with client.responses.create(
+            model=state["model"],
+            input=[{"role": "user", "content": state["input"]}],
+            store=False,
+            stream=True,
+        ) as stream:
+            for event in stream:
+                if event.type == "response.output_text.delta":
+                    parts.append(event.delta)
+                elif event.type == "response.completed":
+                    completed = True
+                elif event.type in ("response.failed", "response.incomplete", "error"):
+                    raise RuntimeError("Model request failed or did not complete.")
+    if not completed:
+        raise RuntimeError("Model stream ended without completion.")
+    return {"output": "".join(parts)}
 
 
-# Edges: START -> call_api -> END
-builder = StateGraph(FlightState)
-builder.add_node("call_api", call_api)
-builder.add_edge(START, "call_api")
-builder.add_edge("call_api", END)
-
+builder = StateGraph(State)
+builder.add_node("call_model", call_model)
+builder.add_edge(START, "call_model")
+builder.add_edge("call_model", END)
 graph = builder.compile()
 
 
 if __name__ == "__main__":
-    result = graph.invoke({
-        "origin": "MIA",
-        "destination": "TPA",
-        "date": "2026-11-20",
-        "api_result": [],
-    })
-    for offer in result["api_result"]:
-        print(offer)
+    parser = argparse.ArgumentParser(description="One input, one model call.")
+    parser.add_argument("--model", help="Available model slug; otherwise choose interactively.")
+    parser.add_argument("--input", help="Message; otherwise enter it interactively.")
+    args = parser.parse_args()
 
+    model = args.model or choose_model()
+    message = args.input if args.input is not None else input("You: ")
+    result = graph.invoke({"input": message, "output": "", "model": model})
+    print(result["output"])
+
+    # PNG rendering uses the online Mermaid service.
     image_path = Path(__file__).with_name("travel_agent.png")
-    image_path.write_bytes(graph.get_graph().draw_mermaid_png())
-    print(f"Graph saved to {image_path}")
+    try:
+        image_path.write_bytes(graph.get_graph().draw_mermaid_png())
+        print(f"Graph saved to {image_path}")
+    except Exception:
+        print("Model call completed, but the graph PNG could not be rendered.")
