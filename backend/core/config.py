@@ -14,7 +14,8 @@ class Settings(BaseSettings):
     DATABASE_URL: str
     ALLOWED_ORIGINS: str = ""
 
-    # ADD LLM API KEY HERE
+    OPENAI_API_KEY: str = ""
+    DUFFEL_API_KEY: str = ""
 
     @field_validator("ALLOWED_ORIGINS")
     def parse_allowed_origins(cls, v: str) -> List[str]:
