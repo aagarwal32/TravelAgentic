@@ -142,12 +142,51 @@ python scripts/download_datasets.py   # if new datasets were added
 
 _Coming soon._
 
-## Day-to-day Git workflow
+## Day-to-Day Git Workflow
 
+### 1. Pick an issue and create its branch on GitHub
+- Go to the **Issues** tab and pick an issue assigned to you (filter with `assignee:@me`).
+- In the issue's right sidebar, under **Development**, click **Create a branch**.
+- Keep GitHub's suggested name. It starts with the issue number followed by the issue title
+  (e.g. `<issue-number>-<short-description>`).
+
+### 2. Switch to the branch, activate the environment, and update
 ```bash
-git pull                              # get the latest changes
-git checkout -b my-feature            # work on a branch
-git add <files>
-git commit -m "Describe your change"
-git push -u origin my-feature         # then open a Pull Request on GitHub
+git fetch origin                     # let your computer know the new branch exists
+git checkout <branch-name>           # switch to the branch GitHub created
+
+source .venv/bin/activate            # Mac/Linux
+# .venv\Scripts\activate             # Windows
+
+git pull                             # latest changes on your branch
+git pull origin main                 # bring in work already merged into main
+pip install -r requirements.txt      # install any packages teammates added
 ```
+
+### 3. Work on the feature and commit as you go
+```bash
+git add <files>
+git commit -m "<short description of the change>"
+```
+Commit after each working step, not only at the end.
+Run `git pull origin main` every day or two to stay up to date and avoid merge conflicts.
+
+### 4. Update requirements (only if you installed new packages), then push
+```bash
+pip freeze > requirements.txt
+git diff requirements.txt            # check that only packages your feature needs were added
+git add requirements.txt
+git commit -m "Update requirements"
+git push -u origin <branch-name>
+```
+
+### 5. Open a Pull Request on GitHub
+- Write `Closes #<issue-number>` in the PR description so the issue closes automatically when merged.
+- Request a review from a teammate. Never push directly to `main`.
+
+### Command reference
+| Command | What it does |
+|---|---|
+| `git fetch origin` | Downloads info about new branches and commits from GitHub; does **not** change your files |
+| `git pull` | Downloads and applies new commits on **your current branch** |
+| `git pull origin main` | Downloads the latest `main` and merges it **into your current branch** (you stay on your branch) |
