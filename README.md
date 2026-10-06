@@ -11,7 +11,7 @@ TravelAgentic is an AI-powered travel planner that helps budget-conscious colleg
 | Arjun Agarwal|
 | Saatvik Palli |
 | Inigo Serrano     |
-| Tianyu(Wilson) Zhu      |
+| Wilson Zhu      |
 | Gia Bao Ta     |
 | Ethan Guo     |
 | Duc Vo     |
