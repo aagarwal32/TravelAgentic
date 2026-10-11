@@ -1,6 +1,5 @@
 from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker
-from sqlalchemy.ext.declarative import declarative_base
+from sqlalchemy.orm import DeclarativeBase, sessionmaker
 
 from core.config import settings
 
@@ -12,7 +11,11 @@ SessionLocal = sessionmaker(
     autoflush=False,
     bind=engine
 )
-Base = declarative_base()
+
+
+class Base(DeclarativeBase):
+    pass
+
 
 def get_db():
     db = SessionLocal()
@@ -21,5 +24,8 @@ def get_db():
     finally:
         db.close()
 
+
 def create_tables():
+    import models  # noqa: F401  registers every model on Base.metadata before creating tables
+
     Base.metadata.create_all(bind=engine)
