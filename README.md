@@ -16,6 +16,7 @@ TravelAgentic is an AI-powered travel planner that helps budget-conscious colleg
 | Ethan Guo     |
 | Duc Vo     |
 | Ethan Lin     |
+| Alex Lien     |
 
 ### Datasets
 
