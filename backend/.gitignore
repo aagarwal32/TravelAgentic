@@ -235,3 +235,6 @@ datasets/
 
 # Local OAuth credentials (all nested locations)
 .chatgpt-auth/
+
+# Generated graph visualization
+services/agent/trip_intake_graph.png

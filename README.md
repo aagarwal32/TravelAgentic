@@ -225,3 +225,13 @@ Offline verification from the repository root:
 ```bash
 PYTHONPATH=backend .venv/bin/python -m unittest discover -s backend/tests -v
 ```
+
+The demo generates `backend/services/agent/trip_intake_graph.png` at startup.
+To render it without OAuth or model calls, run from `backend/`:
+
+```bash
+python -m services.agent.graph --graph-only
+```
+
+PNG rendering uses the online Mermaid service and requires network access.
+Only the graph topology is sent; the generated image is ignored by Git.

@@ -2,6 +2,7 @@
 import argparse
 import json
 from uuid import uuid4
+from pathlib import Path
 from langchain_core.messages import AIMessage, HumanMessage
 from langgraph.graph import START, END, StateGraph
 from langgraph.checkpoint.memory import InMemorySaver
@@ -31,7 +32,8 @@ def build_graph(checkpointer=None):
     builder.add_node("wait_for_reply", wait_for_reply)
     builder.add_node("planning", next_step)
     builder.add_edge(START, "extract")
-    builder.add_conditional_edges("extract", lambda s: "planning" if s["ready"] else "clarify")
+    builder.add_conditional_edges("extract", lambda s: "planning" if s["ready"] else "clarify",
+                                  {"planning": "planning", "clarify": "clarify"})
     builder.add_edge("clarify", "wait_for_reply")
     builder.add_edge("wait_for_reply", "extract")
     builder.add_edge("planning", END)
@@ -42,9 +44,21 @@ def main():
     from services.agent.nodes.chatgpt_auth import choose_model
     parser = argparse.ArgumentParser(description="Conversational trip intake with ChatGPT OAuth")
     parser.add_argument("--model", help="Available model slug; otherwise choose after sign-in")
+    parser.add_argument("--graph-only", action="store_true", help="Render the graph without signing in")
     args = parser.parse_args()
-    model = args.model or choose_model()
     graph = build_graph()
+    image_path = Path(__file__).with_name("trip_intake_graph.png")
+    try:
+        # Mermaid renders topology only; no conversation state or credentials are sent.
+        image_path.write_bytes(graph.get_graph().draw_mermaid_png(max_retries=0))
+        print(f"Graph saved to {image_path}")
+    except Exception:
+        print("Could not render graph PNG. Check your connection to the Mermaid rendering service.")
+        if args.graph_only:
+            raise SystemExit(1) from None
+    if args.graph_only:
+        return
+    model = args.model or choose_model()
     config = {"configurable": {"thread_id": str(uuid4())}}
     try:
         message = input("You: ").strip()
