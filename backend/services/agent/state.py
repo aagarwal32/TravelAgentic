@@ -1,0 +1,60 @@
+from datetime import date
+from typing import Annotated, Literal, Optional, TypedDict, NotRequired
+from langgraph.graph.message import add_messages
+from pydantic import BaseModel, Field, model_validator
+
+class TripConstraints(BaseModel):
+    origin: Optional[str] = None
+    destination: Optional[str] = None
+    mode: Optional[Literal["fly", "drive"]] = None
+    trip_type: Optional[Literal["one_way", "round_trip"]] = None
+    depart_date: Optional[date] = None
+    flexible_start: Optional[date] = None   # "sometime in March" → Mar 1
+    flexible_end: Optional[date] = None     #                     → Mar 31
+    budget: Optional[float] = Field(None, gt=0)   
+    travelers: Optional[int] = Field(None, ge=1, le=9)
+    return_date: Optional[date] = None
+    driver_age: Optional[int] = Field(None, ge=18, le=99)
+    needs_car: Optional[bool] = None
+    max_connections: Optional[int] = Field(None, ge=0, le=2)
+    activities: Optional[list[str]] = None
+    hotel_preferences: Optional[str] = None
+    budget_scope: Optional[Literal["per_person", "total"]] = None
+
+
+    @model_validator(mode="after")
+    def check_dates(self):
+        today = date.today()
+        if self.depart_date and self.depart_date < today:
+          raise ValueError("depart_date is in the past")
+        if self.return_date and self.return_date < today:
+          raise ValueError("return_date is in the past")
+        if self.depart_date and self.return_date and self.return_date < self.depart_date:
+            raise ValueError("return_date before depart_date")
+        if self.flexible_start and self.flexible_end and self.flexible_end < self.flexible_start:
+            raise ValueError("flexible window is backwards")
+        return self
+
+REQUIRED = ["origin", "destination", "mode", "trip_type", "budget", "travelers"]
+OPTIONAL = ["needs_car", "max_connections", "activities", "hotel_preferences"]
+
+def compute_missing(c: TripConstraints) -> list[str]:
+    missing = [f for f in REQUIRED if getattr(c, f) is None]
+    has_dates = c.depart_date or (c.flexible_start and c.flexible_end)
+    if not has_dates:
+        missing.append("depart_date")
+    if c.trip_type == "round_trip" and c.depart_date and not c.return_date:
+        missing.append("return_date")
+    if c.needs_car and c.driver_age is None:
+        missing.append("driver_age")
+    return missing
+
+class TripState(TypedDict):
+    messages: Annotated[list, add_messages]   
+    constraints: dict                       
+    missing: list[str]
+    skipped: list[str]
+    trends: NotRequired[dict]
+    offers: NotRequired[dict]
+    hotel_matches: NotRequired[list]
+    evaluation: NotRequired[dict]

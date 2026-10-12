@@ -231,3 +231,4 @@ datasets/
 *.db-journal
 *-wal
 *-shm
+.chatgpt-auth/
