@@ -232,3 +232,6 @@ datasets/
 *-wal
 *-shm
 .chatgpt-auth/
+
+# Local OAuth credentials (all nested locations)
+.chatgpt-auth/
