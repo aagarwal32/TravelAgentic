@@ -55,14 +55,14 @@ class TripLoopTests(unittest.TestCase):
         self.assertIn('return_date', compute_missing(constraints))
 
     def test_oauth_transport(self):
-        from services.agent.nodes.call_model import call_model
+        from services.agent.llm import generate
         from types import SimpleNamespace
-        with patch('services.agent.nodes.call_model.get_access_token', return_value='mock-token'), \
-             patch('services.agent.nodes.call_model.OpenAI') as client:
+        with patch('services.agent.llm.get_access_token', return_value='mock-token'), \
+             patch('services.agent.llm.OpenAI') as client:
             client.return_value.__enter__.return_value.responses.create.return_value.__enter__.return_value = iter([
                 SimpleNamespace(type='response.output_text.delta', delta='{}'),
                 SimpleNamespace(type='response.completed')])
-            self.assertEqual(call_model({'model': 'mock', 'input': 'hello', 'instructions': 'parse'})['output'], '{}')
+            self.assertEqual(generate('mock', 'parse', 'hello'), '{}')
             self.assertEqual(client.call_args.kwargs['api_key'], 'mock-token')
 
 if __name__ == '__main__':
