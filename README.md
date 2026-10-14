@@ -191,3 +191,48 @@ git push -u origin <branch-name>
 | `git fetch origin` | Downloads info about new branches and commits from GitHub; does **not** change your files |
 | `git pull` | Downloads and applies new commits on **your current branch** |
 | `git pull origin main` | Downloads the latest `main` and merges it **into your current branch** (you stay on your branch) |
+
+## Textbox trip-intake demo (issue #4)
+
+From the repository root, activate your Python environment and run:
+
+```bash
+source .venv/bin/activate
+cd backend
+python -m services.agent.graph
+```
+
+This reuses the `flight-agent` ChatGPT OAuth sign-in and streaming model call.
+The first run opens browser sign-in and lists available models; choose a model
+from that list. You can also supply an available slug with `--model <slug>`.
+No OpenAI API key is required. Account/model access must support the existing
+OAuth flow. Credentials are stored under `services/agent/.chatgpt-auth/`, ignored
+by Git, and never enter graph state.
+
+Enter a trip request, then answer follow-up questions in the same terminal input.
+The model proposes JSON field updates; Python validates and merges them before
+checking required details. Invalid values produce follow-up questions. Enter
+`/quit` at a follow-up to exit. Completion prints validated constraints and calls
+a placeholder planning node; it does not search or book travel.
+
+The graph uses in-memory checkpoints: conversation state is retained during the
+process but lost on restart. A future chat route can start a conversation with
+`graph.invoke(initial_state, config)` and resume an interrupt with
+`graph.invoke(Command(resume=text), config)`, using the same unique thread ID.
+This demo uses one local OAuth account and is not a multi-user server endpoint.
+
+Offline verification from the repository root:
+
+```bash
+PYTHONPATH=backend .venv/bin/python -m unittest discover -s backend/tests -v
+```
+
+The demo generates `backend/services/agent/trip_intake_graph.png` at startup.
+To render it without OAuth or model calls, run from `backend/`:
+
+```bash
+python -m services.agent.graph --graph-only
+```
+
+PNG rendering uses the online Mermaid service and requires network access.
+Only the graph topology is sent; the generated image is ignored by Git.

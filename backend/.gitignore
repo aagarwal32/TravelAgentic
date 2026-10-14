@@ -231,3 +231,10 @@ datasets/
 *.db-journal
 *-wal
 *-shm
+.chatgpt-auth/
+
+# Local OAuth credentials (all nested locations)
+.chatgpt-auth/
+
+# Generated graph visualization
+services/agent/trip_intake_graph.png
