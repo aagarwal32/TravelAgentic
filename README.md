@@ -250,3 +250,10 @@ python -m scripts.ingest_table6                  # loads it into dot_table6_fare
 The second command replaces the table's contents, so running it twice never creates
 duplicates. When DOT publishes a new quarter, run both commands again. It prints the
 rows loaded, rows skipped and the newest year/quarter.
+
+By default the script reads `datasets/dot_table6.csv`. To load a CSV from somewhere
+else, pass its path with the optional `--csv` argument:
+
+```bash
+python -m scripts.ingest_table6 --csv path/to/dot_table6.csv
+```
