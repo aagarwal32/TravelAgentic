@@ -1,13 +1,11 @@
-tbl,year,quarter,citymarketid_1,citymarketid_2,city1,city2,nsmiles,passengers,fare,carrier_lg,large_ms,fare_lg,carrier_low,lf_ms,fare_low,table_1_flag,location_1,location_2,tbl6pk
-Table 6,2022,1,30325,30977,"Chicago, IL","Denver, CO",888,312.5,164.2,UA,0.41,171.9,WN,0.33,139.8,,POINT (-87.9 41.9),POINT (-104.7 39.9),20221303253097
-Table 6,2023,3,32467,33195,"Miami, FL (Metropolitan Area)","Tampa, FL (Metropolitan Area)",204,298.1,174.0,AA,0.52,239.0,NK,0.31,90.0,,POINT (-80.3 25.8),POINT (-82.5 28.0),20233324673319
-Table 6,2024,4,32467,33195,"Miami, FL (Metropolitan Area)","Tampa, FL (Metropolitan Area)",204,305.4,183.0,AA,0.50,250.0,NK,0.33,94.0,,POINT (-80.3 25.8),POINT (-82.5 28.0),20244324673319
-Table 6,2025,2,30977,31703,"Chicago, IL","New York City, NY (Metropolitan Area)",733,1204.8,201.7,UA,0.38,226.4,AA,0.29,178.5,,POINT (-87.9 41.9),POINT (-74.0 40.7),20252309773170
-Table 6,2025,3,30397,30721,"Atlanta, GA (Metropolitan Area)","Boston, MA (Metropolitan Area)",946,410.2,198.3,DL,0.61,205.0,,,,,POINT (-84.4 33.6),POINT (-71.0 42.4),20253303973072
-Table 6,2026,1,32467,33195,"Miami, FL (Metropolitan Area)","Tampa, FL (Metropolitan Area)",204,311.0,197.0,AA,0.49,263.0,NK,0.34,98.0,,POINT (-80.3 25.8),POINT (-82.5 28.0),20261324673319
-Table 6,2021,4,30325,30977,"Chicago, IL","Denver, CO",888,250.0,158.0,UA,0.40,165.0,WN,0.35,132.0,,POINT (-87.9 41.9),POINT (-104.7 39.9),20214303253097
-Table 6,2019,2,32467,33195,"Miami, FL (Metropolitan Area)","Tampa, FL (Metropolitan Area)",204,270.0,150.0,AA,0.55,210.0,NK,0.28,80.0,,POINT (-80.3 25.8),POINT (-82.5 28.0),20192324673319
-Table 6,2024,1,30325,32575,"Denver, CO","Los Angeles, CA (Metropolitan Area)",862,540.0,,WN,0.36,171.0,F9,0.22,120.0,,POINT (-104.7 39.9),POINT (-118.4 33.9),20241303253257
-Table 6,2024,2,30721,31703,"Boston, MA (Metropolitan Area)","New York City, NY (Metropolitan Area)",187,380.0,n/a,B6,0.44,160.0,DL,0.30,140.0,,POINT (-71.0 42.4),POINT (-74.0 40.7),20242307213170
-Table 6,2025,4,30977,31703,"Chicago, IL","New York City, NY (Metropolitan Area)",733,1190.0,190.0,UA,0.37,220.0,AA,0.30,170.0,,POINT (-87.9 41.9),POINT (-74.0 40.7),20252309773170
-Table 6,2025,5,30325,30977,"Chicago, IL","Denver, CO",888,320.0,170.0,UA,0.40,175.0,WN,0.34,145.0,,POINT (-87.9 41.9),POINT (-104.7 39.9),20255303253097
+"tbl","year","quarter","citymarketid_1","citymarketid_2","city1","city2","nsmiles","passengers","fare","carrier_lg","large_ms","fare_lg","carrier_low","lf_ms","fare_low","table_1_flag","location_1","location_1_address","location_1_city","location_1_state","location_1_zip","location_2","location_2_address","location_2_city","location_2_state","location_2_zip","tbl6pk"
+"Table 6","2022","1","30135","30194","Allentown/Bethlehem/Easton, PA","Dallas/Fort Worth, TX","1307","20.44444444","288.9016304","AA","0.6793478261","297.5912","DL","0.2608695652","272.1875","0",,,,,,,,,,,"202213013530194"
+"Table 6","2022","1","30135","30325","Allentown/Bethlehem/Easton, PA","Denver, CO","1539","11.66666667","305.0771429","AA","0.5523809524","299.9706897","AA","0.5523809524","299.9706897","0",,,,,,,,,,,"202213013530325"
+"Table 6","2022","1","30135","30397","Allentown/Bethlehem/Easton, PA","Atlanta, GA (Metropolitan Area)","692","108.5555556","191.1555783","DL","0.9539406346","191.343133","AA","0.0296827022","173.6896552","0",,,,,,,,,,,"202213013530397"
+"Table 6","2021","1","30135","30423","Allentown/Bethlehem/Easton, PA","Austin, TX","1441","10","294.3355556","AA","0.5444444444","286.7346939","AA","0.5444444444","286.7346939","0",,,,,,,,,,,"202113013530423"
+"Table 6","2022","1","30135","30466","Allentown/Bethlehem/Easton, PA","Phoenix, AZ","2066","15","332.462963","AA","0.6518518519","313.8409091","AA","0.6518518519","313.8409091","0",,,,,,,,,,,"202213013530466"
+"Table 6","2022","1","30135","30693","Allentown/Bethlehem/Easton, PA","Nashville, TN","685","22.11111111","","G4","0.3718592965","75.18918919","G4","0.3718592965","75.18918919","0",,,,,,,,,,,"202213013530693"
+"Table 6","2022","1","30135","30977","Allentown/Bethlehem/Easton, PA","Chicago, IL","654","30","n/a","AA","0.4925925926","281.3345865","UA","0.437037037","237.8872881","0",,,,,,,,,,,"202213013530977"
+"Table 6","2022","1","30135","31057","Allentown/Bethlehem/Easton, PA","Charlotte, NC","481","49","234.4258503","AA","0.9682539683","233.1906323","AA","0.9682539683","233.1906323","0",,,,,,,,,,,"202213013530194"
+"Table 6","2022","5","30135","31123","Allentown/Bethlehem/Easton, PA","St. Louis, MO","805","10.11111111","265.7450549","AA","0.5274725275","228.3104167","AA","0.5274725275","228.3104167","0",,,,,,,,,,,"202253013531123"
+"Table 6","2022","1","30135","31136","Allentown/Bethlehem/Easton, PA","Jacksonville, FL","783","11.11111111","228.925","AA","0.5","231.844","AA","0.5","231.844","0",,,,,,,,,,,"202213013531136"

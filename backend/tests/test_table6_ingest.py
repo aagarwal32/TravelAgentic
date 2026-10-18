@@ -25,11 +25,13 @@ from scripts import ingest_table6
 
 FIXTURE = Path(__file__).parent / "fixtures" / "table6_sample.csv"
 
-# What the fixture contains. If you replace it with rows copied from the real
-# file, update these numbers:
-#   6 good rows (>= 2022), 2 rows before 2022 (filtered out silently),
-#   4 bad rows (empty fare, "n/a" fare, repeated tbl6pk, quarter 5) that get skipped.
-FIXTURE_LOADED = 6
+# table6_sample.csv holds 10 rows copied from the real DOT file (Allentown routes,
+# 2022 Q1), with 5 of them edited on purpose:
+#   5 good rows are loaded;
+#   1 row edited to year 2021 is filtered out silently (not counted as skipped);
+#   4 rows edited to be bad are skipped: empty fare (Nashville), "n/a" fare (Chicago),
+#   repeated tbl6pk (Charlotte) and quarter 5 (St. Louis).
+FIXTURE_LOADED = 5
 FIXTURE_SKIPPED = 4
 
 
