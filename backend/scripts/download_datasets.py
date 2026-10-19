@@ -28,6 +28,16 @@ DATASETS = [
         "filename": "example.csv",
         "sha256": None,
     },
+    {
+        "name": "dot_table6",
+        # Plain API link (not the site's Export button): numbers come as plain numbers
+        # and it is already filtered to 2022+. ">" is written as %3E so it is a valid URL.
+        "url": "https://data.transportation.gov/resource/yj5y-b2ir.csv?$where=year%3E=2022&$order=tbl6pk&$limit=500000",
+        "filename": "dot_table6.csv",
+        # sha256 is None on purpose: DOT adds a new quarter every ~3 months, so the
+        # file changes and a fixed checksum would break the download.
+        "sha256": None,
+    },
 ]
 
 CHUNK_SIZE = 1024 * 1024
