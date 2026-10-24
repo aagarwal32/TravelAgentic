@@ -1,0 +1,25 @@
+{
+  "data": [
+    {
+      "hotelId": "lp65575708",
+      "price": 624.25
+    },
+    {
+      "hotelId": "lp98bf8",
+      "price": 516.45
+    },
+    {
+      "hotelId": "lp1f9e6",
+      "price": 332.31
+    },
+    {
+      "hotelId": "lp39a0b",
+      "price": 836.72
+    },
+    {
+      "hotelId": "lp1ae46",
+      "price": 725.72
+    }
+  ],
+  "sandbox": true
+}

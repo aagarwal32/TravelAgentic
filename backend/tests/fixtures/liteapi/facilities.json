@@ -1,0 +1,28 @@
+{
+  "data": [
+    {
+      "facility_id": 47,
+      "facility": "WiFi available"
+    },
+    {
+      "facility_id": 107,
+      "facility": "Free WiFi"
+    },
+    {
+      "facility_id": 2,
+      "facility": "Parking"
+    },
+    {
+      "facility_id": 11,
+      "facility": "Fitness center"
+    },
+    {
+      "facility_id": 301,
+      "facility": "Swimming pool"
+    },
+    {
+      "facility_id": 199,
+      "facility": "Pool bar"
+    }
+  ]
+}
