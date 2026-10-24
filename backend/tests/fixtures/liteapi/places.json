@@ -1,0 +1,14 @@
+{
+  "data": [
+    {
+      "placeId": "ChIJzxcfI6qAa4cR1jaKJ_j0jhE",
+      "displayName": "Denver",
+      "formattedAddress": "Colorado, United States",
+      "types": [
+        "locality",
+        "geocode",
+        "political"
+      ]
+    }
+  ]
+}

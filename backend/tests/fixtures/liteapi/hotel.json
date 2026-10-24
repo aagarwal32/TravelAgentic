@@ -1,0 +1,63 @@
+{
+  "data": {
+    "id": "lp39a0b",
+    "name": "Hyatt Regency Denver at Colorado Convention Center",
+    "starRating": 4,
+    "rating": 9,
+    "checkinCheckoutTimes": {
+      "checkin_start": "04:00 PM",
+      "checkin_end": "",
+      "checkout": "11:00 AM",
+      "instructions": [],
+      "special_instructions": ""
+    },
+    "hotelFacilities": [
+      "Fitness facilities",
+      "WiFi available",
+      "Free WiFi",
+      "Parking",
+      "Non-smoking rooms",
+      "Air conditioning",
+      "Fitness center",
+      "Swimming pool"
+    ],
+    "facilities": [
+      {
+        "facilityId": 492,
+        "name": "Fitness facilities"
+      },
+      {
+        "facilityId": 47,
+        "name": "WiFi available"
+      },
+      {
+        "facilityId": 107,
+        "name": "Free WiFi"
+      },
+      {
+        "facilityId": 2,
+        "name": "Parking"
+      },
+      {
+        "facilityId": 16,
+        "name": "Non-smoking rooms"
+      },
+      {
+        "facilityId": 109,
+        "name": "Air conditioning"
+      },
+      {
+        "facilityId": 11,
+        "name": "Fitness center"
+      },
+      {
+        "facilityId": 301,
+        "name": "Swimming pool"
+      }
+    ],
+    "parking": "PAID",
+    "petsAllowed": false,
+    "policies": [],
+    "main_photo": "https://static.cupid.travel/hotels/552295375.jpg"
+  }
+}

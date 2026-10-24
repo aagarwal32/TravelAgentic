@@ -1,0 +1,48 @@
+{
+  "data": {
+    "countryCode": "US",
+    "displayName": "Denver",
+    "location": {
+      "latitude": 39.739235799999996,
+      "longitude": -104.99025100000001
+    },
+    "addressComponents": [
+      {
+        "languageCode": "en",
+        "longText": "Denver",
+        "shortText": "Denver",
+        "types": [
+          "locality",
+          "political"
+        ]
+      },
+      {
+        "languageCode": "en",
+        "longText": "Denver County",
+        "shortText": "Denver County",
+        "types": [
+          "administrative_area_level_2",
+          "political"
+        ]
+      },
+      {
+        "languageCode": "en",
+        "longText": "Colorado",
+        "shortText": "CO",
+        "types": [
+          "administrative_area_level_1",
+          "political"
+        ]
+      },
+      {
+        "languageCode": "en",
+        "longText": "United States",
+        "shortText": "US",
+        "types": [
+          "country",
+          "political"
+        ]
+      }
+    ]
+  }
+}
