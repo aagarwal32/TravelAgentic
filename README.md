@@ -236,3 +236,24 @@ python -m services.agent.graph --graph-only
 
 PNG rendering uses the online Mermaid service and requires network access.
 Only the graph topology is sent; the generated image is ignored by Git.
+
+## Load DOT Table 6
+
+Historical airfares (DOT Consumer Airfare Report, Table 6, 2022 and newer) used by
+the trends agent. From `backend/`:
+
+```bash
+python scripts/download_datasets.py dot_table6   # downloads datasets/dot_table6.csv
+python -m scripts.ingest_table6                  # loads it into dot_table6_fares
+```
+
+The second command replaces the table's contents, so running it twice never creates
+duplicates. When DOT publishes a new quarter, run both commands again. It prints the
+rows loaded, rows skipped and the newest year/quarter.
+
+By default the script reads `datasets/dot_table6.csv`. To load a CSV from somewhere
+else, pass its path with the optional `--csv` argument:
+
+```bash
+python -m scripts.ingest_table6 --csv path/to/dot_table6.csv
+```

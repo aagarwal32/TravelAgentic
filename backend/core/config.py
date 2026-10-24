@@ -1,4 +1,4 @@
-from typing import List
+from typing import List, Optional
 from pydantic_settings import BaseSettings
 from pydantic import field_validator
 
@@ -14,7 +14,10 @@ class Settings(BaseSettings):
     DATABASE_URL: str
     ALLOWED_ORIGINS: str = ""
 
-    # ADD LLM API KEY HERE
+    # LiteAPI (hotels). Use a sandbox key in .env during development.
+    LITEAPI_API_KEY: Optional[str] = None
+    LITEAPI_BASE_URL: str = "https://api.liteapi.travel/v3.0"
+    LITEAPI_DAILY_LIMIT: int = 200
 
     @field_validator("ALLOWED_ORIGINS")
     def parse_allowed_origins(cls, v: str) -> List[str]:
