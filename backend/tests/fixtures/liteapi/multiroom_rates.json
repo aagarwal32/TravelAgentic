@@ -1,0 +1,136 @@
+{
+  "sandbox": true,
+  "data": [
+    {
+      "hotelId": "lp65575708",
+      "roomTypes": [
+        {
+          "rates": [
+            {
+              "name": "1 KING GUESTROOM HEARING ACCESSIBLE",
+              "occupancyNumber": 1,
+              "boardType": "RO",
+              "boardName": "Room Only",
+              "retailRate": {
+                "total": [
+                  {
+                    "amount": 610.41,
+                    "currency": "USD"
+                  }
+                ]
+              },
+              "cancellationPolicies": {
+                "refundableTag": "NRFN"
+              }
+            },
+            {
+              "name": "1 KING GUESTROOM HEARING ACCESSIBLE",
+              "occupancyNumber": 2,
+              "boardType": "RO",
+              "boardName": "Room Only",
+              "retailRate": {
+                "total": [
+                  {
+                    "amount": 610.41,
+                    "currency": "USD"
+                  }
+                ]
+              },
+              "cancellationPolicies": {
+                "refundableTag": "NRFN"
+              }
+            }
+          ],
+          "offerRetailRate": {
+            "amount": 1220.82,
+            "currency": "USD"
+          }
+        },
+        {
+          "rates": [
+            {
+              "name": "Room, 1 King Bed",
+              "occupancyNumber": 1,
+              "boardType": "RO",
+              "boardName": "Room Only",
+              "retailRate": {
+                "total": [
+                  {
+                    "amount": 610.41,
+                    "currency": "USD"
+                  }
+                ]
+              },
+              "cancellationPolicies": {
+                "refundableTag": "NRFN"
+              }
+            },
+            {
+              "name": "Room, 1 King Bed",
+              "occupancyNumber": 2,
+              "boardType": "RO",
+              "boardName": "Room Only",
+              "retailRate": {
+                "total": [
+                  {
+                    "amount": 610.41,
+                    "currency": "USD"
+                  }
+                ]
+              },
+              "cancellationPolicies": {
+                "refundableTag": "NRFN"
+              }
+            }
+          ],
+          "offerRetailRate": {
+            "amount": 1220.82,
+            "currency": "USD"
+          }
+        },
+        {
+          "rates": [
+            {
+              "name": "1 KING STANDARD GUESTROOM,HIGH CEILINGS EXPANSIVE WINDOWS RAIN SHOWER,55 INCH HDTV COFFEEMAKER MINI FRIDGE WIFI,",
+              "occupancyNumber": 1,
+              "boardType": "RO",
+              "boardName": "Room Only",
+              "retailRate": {
+                "total": [
+                  {
+                    "amount": 633.98,
+                    "currency": "USD"
+                  }
+                ]
+              },
+              "cancellationPolicies": {
+                "refundableTag": "NRFN"
+              }
+            },
+            {
+              "name": "1 KING STANDARD GUESTROOM,HIGH CEILINGS EXPANSIVE WINDOWS RAIN SHOWER,55 INCH HDTV COFFEEMAKER MINI FRIDGE WIFI,",
+              "occupancyNumber": 2,
+              "boardType": "RO",
+              "boardName": "Room Only",
+              "retailRate": {
+                "total": [
+                  {
+                    "amount": 633.98,
+                    "currency": "USD"
+                  }
+                ]
+              },
+              "cancellationPolicies": {
+                "refundableTag": "NRFN"
+              }
+            }
+          ],
+          "offerRetailRate": {
+            "amount": 1267.96,
+            "currency": "USD"
+          }
+        }
+      ]
+    }
+  ]
+}

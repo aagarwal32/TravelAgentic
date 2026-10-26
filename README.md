@@ -257,3 +257,62 @@ else, pass its path with the optional `--csv` argument:
 ```bash
 python -m scripts.ingest_table6 --csv path/to/dot_table6.csv
 ```
+
+### LiteAPI hotel search (issue #12)
+
+Add `LITEAPI_API_KEY=<your sandbox key>` to your local `backend/.env`. Never
+commit that file. The key is optional at app startup; hotel requests raise
+`LiteAPIError` when it is missing. Optional environment settings are
+`LITEAPI_BASE_URL` (default `https://api.liteapi.travel/v3.0`) and
+`LITEAPI_DAILY_LIMIT` (default 200 attempted requests per process per day).
+The counter is thread-safe, resets on restart, and is not a shared account quota.
+Requests have bounded timeouts and are not retried automatically.
+
+The eight functions in `backend/services/hotel_service.py` are ordinary Python
+functions; LangGraph integration and booking remain separate work. For example,
+run this from `backend/` in your Python environment:
+
+```python
+from datetime import date
+from services.hotel_service import search_hotels_with_prices
+
+hotels = search_hotels_with_prices(
+    "Denver", date(2026, 11, 18), date(2026, 11, 21),
+    adults=2, rooms=1, radius_m=5000, max_total=600,
+)
+print(hotels[:3])
+```
+
+Use future dates when running the example. Searches use the US city center,
+then `/data/hotels`, then `/hotels/min-rates`. Prices are USD for the whole stay
+and every requested room; `per_night` is the average total per night across
+those rooms. Quotes carry `sandbox` and a UTC `fetched_at` timestamp and can
+change between requests. `max_total` is the whole-stay budget. Empty searches
+return `[]`; a missing city returns `None`, missing details return `{}`, and an
+empty review summary has an unknown average and zero sampled reviews.
+
+Distances are straight-line kilometres. The hotel-data API fetches candidates
+with a minimum 1000 m radius; Python enforces the requested radius before
+sorting, including smaller radii. The default search considers at most 50
+provider candidates, so it is not an exhaustive list of every hotel in a city.
+`get_room_offers` keeps multi-room offers grouped, returns USD stay totals, and
+marks refundability as unknown if cancellation information is absent. Any
+refundable rate can still have cancellation deadlines or penalties.
+
+`find_facility_ids` matches exact facility names ignoring case and punctuation,
+plus aliases such as WiFi, pool, and gym. Each name resolves to one canonical
+facility, avoiding accidental requirements such as a pool bar. Review averages
+and common phrases describe only the requested review sample; no reviewer
+identities are returned. `total_reviews` is the provider's full review count.
+
+Offline tests (from `backend/`, Windows PowerShell):
+
+```powershell
+.\.venv\Scripts\python.exe -m unittest discover -s tests -v
+```
+
+The hotel tests mock the transport and use sanitized sandbox fixtures. They
+make no live API requests. Sandbox validation on 2026-10-19 returned 45 priced
+Denver hotels within 5 km for two adults, 2026-11-18 to 2026-11-21. A separate
+two-room response confirmed USD 1220.82 for the full three-night stay and both
+rooms (USD 610.41 per room for the stay); these are historical test quotes.

@@ -1,0 +1,35 @@
+{
+  "data": [
+    {
+      "averageScore": 9,
+      "headline": "Anonymized sample 1",
+      "pros": "Helpful staff",
+      "cons": ""
+    },
+    {
+      "averageScore": 10,
+      "headline": "Anonymized sample 2",
+      "pros": "Good location",
+      "cons": "Small room"
+    },
+    {
+      "averageScore": 8,
+      "headline": "Anonymized sample 3",
+      "pros": "Helpful staff",
+      "cons": ""
+    },
+    {
+      "averageScore": 9,
+      "headline": "Anonymized sample 4",
+      "pros": "Good location",
+      "cons": "Small room"
+    },
+    {
+      "averageScore": 7,
+      "headline": "Anonymized sample 5",
+      "pros": "Helpful staff",
+      "cons": ""
+    }
+  ],
+  "total": 1185
+}

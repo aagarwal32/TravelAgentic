@@ -1,0 +1,85 @@
+{
+  "sandbox": true,
+  "data": [
+    {
+      "hotelId": "lp65575708",
+      "roomTypes": [
+        {
+          "rates": [
+            {
+              "name": "1 KING GUESTROOM HEARING ACCESSIBLE",
+              "occupancyNumber": 1,
+              "boardType": "RO",
+              "boardName": "Room Only",
+              "retailRate": {
+                "total": [
+                  {
+                    "amount": 610.41,
+                    "currency": "USD"
+                  }
+                ]
+              },
+              "cancellationPolicies": {
+                "refundableTag": "NRFN"
+              }
+            }
+          ],
+          "offerRetailRate": {
+            "amount": 610.41,
+            "currency": "USD"
+          }
+        },
+        {
+          "rates": [
+            {
+              "name": "Room, 1 King Bed",
+              "occupancyNumber": 1,
+              "boardType": "RO",
+              "boardName": "Room Only",
+              "retailRate": {
+                "total": [
+                  {
+                    "amount": 610.41,
+                    "currency": "USD"
+                  }
+                ]
+              },
+              "cancellationPolicies": {
+                "refundableTag": "NRFN"
+              }
+            }
+          ],
+          "offerRetailRate": {
+            "amount": 610.41,
+            "currency": "USD"
+          }
+        },
+        {
+          "rates": [
+            {
+              "name": "1 KING STANDARD GUESTROOM",
+              "occupancyNumber": 1,
+              "boardType": "RO",
+              "boardName": "Room Only",
+              "retailRate": {
+                "total": [
+                  {
+                    "amount": 624.25,
+                    "currency": "USD"
+                  }
+                ]
+              },
+              "cancellationPolicies": {
+                "refundableTag": "NRFN"
+              }
+            }
+          ],
+          "offerRetailRate": {
+            "amount": 624.25,
+            "currency": "USD"
+          }
+        }
+      ]
+    }
+  ]
+}
