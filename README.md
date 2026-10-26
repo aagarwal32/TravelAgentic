@@ -2,27 +2,22 @@
 
 ## Project Details
 
-TravelAgentic is an AI-powered travel planner that helps budget-conscious college students find the cheapest way to get where they're going. A user enters a trip, such as Chicago to New York, and the agent asks follow-up questions about budget, travel mode, rental cars, and activities. It then returns real, bookable flights, hotels, and rental cars from the Duffel API, along with charts showing which dates and months tend to be cheaper based on historical data. Behind the scenes, a LangGraph system coordinates specialized agents for historical price trends, live pricing, hotel preference matching, and a final evaluator that combines their results. Every price shown comes from live API data or the team's own historical database, never from the language model's guesswork.
+TravelAgentic is an AI-powered travel planner that helps budget-conscious college students find the cheapest way to get where they're going. A user describes a trip in their own words, such as "Chicago to New York in March for under $500", and the app fills in any missing details with quick question cards: dates, budget, number of travelers, whether to fly or drive, and optional preferences like layovers, activities, and hotel wishes. It then shows real flight prices from the Duffel API (skipped for road trips) and real hotel prices from LiteAPI, along with which seasons tend to be cheaper for the route based on historical airfare data. TravelAgentic finds and compares options; it doesn't book them.
+
+Behind the scenes, a LangGraph system coordinates specialized agents for trip intake, historical price trends, live pricing, hotel matching, and a final evaluator that combines their results. Every price shown comes from live API data or the team's own historical database, never from the language model's guesswork.
 
 ### Members
 
-| Name |
-|------|
-| Arjun Agarwal|
-| Saatvik Palli |
-| Inigo Serrano     |
-| Wilson Zhu      |
-| Gia Bao Ta     |
-| Ethan Guo     |
-| Duc Vo     |
-| Ethan Lin     |
-| Alex Lien     |
+Arjun Agarwal · Saatvik Palli · Inigo Serrano · Wilson Zhu · Gia Bao Ta · Ethan Guo · Duc Vo · Ethan Lin · Alex Lien
 
-### Datasets
+### Data sources
 
-- DOT Consumer Airfare Report Table 6 (Departure, Arrival, Dates, Quarter (Q1, Q2, Q3, Q4), avg_price, lowest_price)
-- Kaggle Flight Prices (supplemental for V2)
-- Dotlas for Hotels
+| Source | Used for |
+|---|---|
+| [Duffel API](https://duffel.com/) | Live flight prices |
+| [LiteAPI](https://www.liteapi.travel/) | Hotels and live hotel prices near the destination ([docs/hotels.md](docs/hotels.md)) |
+| [DOT Consumer Airfare Report, Table 6](https://data.transportation.gov/d/yj5y-b2ir) | Historical average fares by city pair and quarter, 2022 onward ([docs/data.md](docs/data.md)) |
+| Kaggle Flight Prices | Possible supplement for V2 |
 
 ### ML Model
 - This model will classify user queries on whether they are related to travel or not to avoid unnecessary LLM API costs.
@@ -103,6 +98,8 @@ DEBUG=True
 API_PREFIX=/api
 DATABASE_URL=sqlite:///./database.db
 ALLOWED_ORIGINS=http://localhost:3000,http://localhost:5173
+# optional, for hotel search (see docs/hotels.md):
+LITEAPI_API_KEY=<your LiteAPI sandbox key>
 ```
 
 Generate a `SECRET_KEY` with:
@@ -122,7 +119,7 @@ python scripts/download_datasets.py          # all datasets
 python scripts/download_datasets.py --list   # see what's available
 ```
 
-The local database is also not committed; everyone builds their own from the datasets.
+The local database is also not committed; everyone builds their own from the datasets. See [docs/data.md](docs/data.md) for loading each dataset into the database.
 
 ### 5. Run the server
 
@@ -134,6 +131,16 @@ fastapi dev main.py
 
 Open http://localhost:8000/docs to see the API. The server reloads when you save a file, and creates any missing database tables on startup.
 
+### 6. Run the tests
+
+From `backend/`, with the virtual environment active (same command on Mac, Linux, and Windows):
+
+```bash
+python -m unittest discover -s tests -v
+```
+
+The tests never call real APIs or touch `database.db`, and all of them should pass before you open a pull request.
+
 ### After pulling changes
 
 ```bash
@@ -144,6 +151,16 @@ python scripts/download_datasets.py   # if new datasets were added
 ## Frontend
 
 _Coming soon._
+
+## Docs
+
+How to use each part of the project, beyond setup:
+
+| Doc | Covers |
+|---|---|
+| [docs/agent.md](docs/agent.md) | The trip-intake agent and its terminal demo |
+| [docs/data.md](docs/data.md) | Downloading datasets and loading DOT Table 6 |
+| [docs/hotels.md](docs/hotels.md) | LiteAPI setup and the hotel search functions |
 
 ## Day-to-Day Git Workflow
 
@@ -186,6 +203,7 @@ git push -u origin <branch-name>
 ### 5. Open a Pull Request on GitHub
 - Write `Closes #<issue-number>` in the PR description so the issue closes automatically when merged.
 - Request a review from a teammate. Never push directly to `main`.
+- Put what you changed and how you checked it in the PR description. If your feature needs instructions (commands, settings), add or update a page in `docs/` and link it from [Docs](#docs). Only change this README when setup changes.
 
 ### Command reference
 | Command | What it does |
@@ -193,128 +211,3 @@ git push -u origin <branch-name>
 | `git fetch origin` | Downloads info about new branches and commits from GitHub; does **not** change your files |
 | `git pull` | Downloads and applies new commits on **your current branch** |
 | `git pull origin main` | Downloads the latest `main` and merges it **into your current branch** (you stay on your branch) |
-
-## Textbox trip-intake demo (issue #4)
-
-From the repository root, activate your Python environment and run:
-
-```bash
-source .venv/bin/activate
-cd backend
-python -m services.agent.graph
-```
-
-This reuses the `flight-agent` ChatGPT OAuth sign-in and streaming model call.
-The first run opens browser sign-in and lists available models; choose a model
-from that list. You can also supply an available slug with `--model <slug>`.
-No OpenAI API key is required. Account/model access must support the existing
-OAuth flow. Credentials are stored under `services/agent/.chatgpt-auth/`, ignored
-by Git, and never enter graph state.
-
-Enter a trip request, then answer follow-up questions in the same terminal input.
-The model proposes JSON field updates; Python validates and merges them before
-checking required details. Invalid values produce follow-up questions. Enter
-`/quit` at a follow-up to exit. Completion prints validated constraints and calls
-a placeholder planning node; it does not search or book travel.
-
-The graph uses in-memory checkpoints: conversation state is retained during the
-process but lost on restart. A future chat route can start a conversation with
-`graph.invoke(initial_state, config)` and resume an interrupt with
-`graph.invoke(Command(resume=text), config)`, using the same unique thread ID.
-This demo uses one local OAuth account and is not a multi-user server endpoint.
-
-Offline verification from the repository root:
-
-```bash
-PYTHONPATH=backend .venv/bin/python -m unittest discover -s backend/tests -v
-```
-
-The demo generates `backend/services/agent/trip_intake_graph.png` at startup.
-To render it without OAuth or model calls, run from `backend/`:
-
-```bash
-python -m services.agent.graph --graph-only
-```
-
-PNG rendering uses the online Mermaid service and requires network access.
-Only the graph topology is sent; the generated image is ignored by Git.
-
-## Load DOT Table 6
-
-Historical airfares (DOT Consumer Airfare Report, Table 6, 2022 and newer) used by
-the trends agent. From `backend/`:
-
-```bash
-python scripts/download_datasets.py dot_table6   # downloads datasets/dot_table6.csv
-python -m scripts.ingest_table6                  # loads it into dot_table6_fares
-```
-
-The second command replaces the table's contents, so running it twice never creates
-duplicates. When DOT publishes a new quarter, run both commands again. It prints the
-rows loaded, rows skipped and the newest year/quarter.
-
-By default the script reads `datasets/dot_table6.csv`. To load a CSV from somewhere
-else, pass its path with the optional `--csv` argument:
-
-```bash
-python -m scripts.ingest_table6 --csv path/to/dot_table6.csv
-```
-
-### LiteAPI hotel search (issue #12)
-
-Add `LITEAPI_API_KEY=<your sandbox key>` to your local `backend/.env`. Never
-commit that file. The key is optional at app startup; hotel requests raise
-`LiteAPIError` when it is missing. Optional environment settings are
-`LITEAPI_BASE_URL` (default `https://api.liteapi.travel/v3.0`) and
-`LITEAPI_DAILY_LIMIT` (default 200 attempted requests per process per day).
-The counter is thread-safe, resets on restart, and is not a shared account quota.
-Requests have bounded timeouts and are not retried automatically.
-
-The eight functions in `backend/services/hotel_service.py` are ordinary Python
-functions; LangGraph integration and booking remain separate work. For example,
-run this from `backend/` in your Python environment:
-
-```python
-from datetime import date
-from services.hotel_service import search_hotels_with_prices
-
-hotels = search_hotels_with_prices(
-    "Denver", date(2026, 11, 18), date(2026, 11, 21),
-    adults=2, rooms=1, radius_m=5000, max_total=600,
-)
-print(hotels[:3])
-```
-
-Use future dates when running the example. Searches use the US city center,
-then `/data/hotels`, then `/hotels/min-rates`. Prices are USD for the whole stay
-and every requested room; `per_night` is the average total per night across
-those rooms. Quotes carry `sandbox` and a UTC `fetched_at` timestamp and can
-change between requests. `max_total` is the whole-stay budget. Empty searches
-return `[]`; a missing city returns `None`, missing details return `{}`, and an
-empty review summary has an unknown average and zero sampled reviews.
-
-Distances are straight-line kilometres. The hotel-data API fetches candidates
-with a minimum 1000 m radius; Python enforces the requested radius before
-sorting, including smaller radii. The default search considers at most 50
-provider candidates, so it is not an exhaustive list of every hotel in a city.
-`get_room_offers` keeps multi-room offers grouped, returns USD stay totals, and
-marks refundability as unknown if cancellation information is absent. Any
-refundable rate can still have cancellation deadlines or penalties.
-
-`find_facility_ids` matches exact facility names ignoring case and punctuation,
-plus aliases such as WiFi, pool, and gym. Each name resolves to one canonical
-facility, avoiding accidental requirements such as a pool bar. Review averages
-and common phrases describe only the requested review sample; no reviewer
-identities are returned. `total_reviews` is the provider's full review count.
-
-Offline tests (from `backend/`, Windows PowerShell):
-
-```powershell
-.\.venv\Scripts\python.exe -m unittest discover -s tests -v
-```
-
-The hotel tests mock the transport and use sanitized sandbox fixtures. They
-make no live API requests. Sandbox validation on 2026-10-19 returned 45 priced
-Denver hotels within 5 km for two adults, 2026-11-18 to 2026-11-21. A separate
-two-room response confirmed USD 1220.82 for the full three-night stay and both
-rooms (USD 610.41 per room for the stay); these are historical test quotes.
