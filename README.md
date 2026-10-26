@@ -102,7 +102,7 @@ ACCESS_TOKEN_EXPIRE_MINUTES=30
 DEBUG=True
 API_PREFIX=/api
 DATABASE_URL=sqlite:///./database.db
-ALLOWED_ORIGINS=http://localhost:3000
+ALLOWED_ORIGINS=http://localhost:3000,http://localhost:5173
 ```
 
 Generate a `SECRET_KEY` with:
@@ -126,11 +126,13 @@ The local database is also not committed; everyone builds their own from the dat
 
 ### 5. Run the server
 
+From `backend/`, with the virtual environment active:
+
 ```bash
-python main.py
+fastapi dev main.py
 ```
 
-Open http://localhost:8000/docs to see the API.
+Open http://localhost:8000/docs to see the API. The server reloads when you save a file, and creates any missing database tables on startup.
 
 ### After pulling changes
 
