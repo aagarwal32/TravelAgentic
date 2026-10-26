@@ -24,7 +24,7 @@ ERROR_TEXT = {
     "destination": "Enter the city you want to go to.",
     "mode":        "Choose Fly or Drive.",
     "trip_type":   "Choose One-way or Round trip.",
-    "depart_date": "Pick a departure date or range that isn't in the past.",
+    "depart_date": "Pick a date or range from today on, with the end after the start.",
     "return_date": "Pick a return date after your departure.",
     "travelers":   "Enter a number from 1 to 9.",
     "budget":      "Enter a budget of at least $1.",

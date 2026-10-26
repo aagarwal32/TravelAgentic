@@ -4,7 +4,7 @@ from datetime import date
 from services.agent.llm import generate
 from services.agent.prompts import EXTRACT_PROMPT
 from services.agent.state import TripConstraints, TripState, compute_missing
-from services.agent.nodes.clarify import COULD_NOT_UNDERSTAND, ERROR_TEXT, merge_answers
+from services.agent.nodes.clarify import COULD_NOT_UNDERSTAND, DATE_FIELDS, ERROR_TEXT, merge_answers
 
 
 def fixed_patch(field: str, value) -> dict:
@@ -34,7 +34,10 @@ def ai_patch(model: str, current: TripConstraints, typed: list[dict]) -> dict:
         return {}
     if not isinstance(patch, dict):
         return {}
-    return {k: v for k, v in patch.items() if k in TripConstraints.model_fields}
+    # null is only allowed for date fields (switching between an exact date and a window);
+    # any other null would erase a saved answer, so it's ignored like a left-out field
+    return {k: v for k, v in patch.items()
+            if k in TripConstraints.model_fields and (v is not None or k in DATE_FIELDS)}
 
 
 def extract(state: TripState) -> dict:

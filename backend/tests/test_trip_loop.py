@@ -88,6 +88,38 @@ class TripLoopTests(unittest.TestCase):
         self.assertEqual(card['card']['text'], "What's the latest date you could be back by?")
         self.assertEqual(card['card']['min'], '2099-03-31')
 
+    def test_backwards_range_shows_range_error(self):
+        self.start({k: v for k, v in COMPLETE.items() if k not in ('depart_date', 'return_date')})
+        card = self.answer({'value': {'start': '2099-03-31', 'end': '2099-03-01'}})
+        self.assertEqual(card['card']['field'], 'depart_date')
+        self.assertEqual(card['error'], ERROR_TEXT['depart_date'])
+        self.assertIn('end after the start', card['error'])
+
+    def test_ai_null_does_not_erase_other_fields(self):
+        self.start({k: v for k, v in COMPLETE.items() if k not in ('depart_date', 'return_date')})
+        self.answer({'text': 'sometime in march'},
+                    ai_patch={'flexible_start': '2099-03-01', 'flexible_end': '2099-03-31',
+                              'origin': None, 'budget': None})
+        self.assertEqual(self.constraints()['origin'], 'Chicago')
+        self.assertEqual(self.constraints()['budget'], 300)
+        self.assertEqual(self.constraints()['flexible_start'], '2099-03-01')
+
+    def test_ai_null_does_not_erase_optional_answer(self):
+        self.start({**COMPLETE, 'max_connections': 0})
+        done = self.answer({'answers': {'activities': {'text': 'hiking'}}},
+                           ai_patch={'activities': ['hiking'], 'max_connections': None})
+        self.assertIsNone(done)
+        self.assertEqual(self.constraints()['max_connections'], 0)  # never asked again, so must survive
+
+    def test_ai_null_still_switches_exact_date_to_window(self):
+        self.start({k: v for k, v in COMPLETE.items() if k != 'return_date'})
+        self.assertEqual(self.constraints()['depart_date'], '2099-01-01')
+        self.answer({'text': 'actually sometime in march'},
+                    ai_patch={'depart_date': None, 'flexible_start': '2099-03-01',
+                              'flexible_end': '2099-03-31', 'return_date': '2099-04-05'})
+        self.assertIsNone(self.constraints()['depart_date'])
+        self.assertEqual(self.constraints()['flexible_end'], '2099-03-31')
+
     def test_optional_stack_shown_once_and_skip_all_reaches_planning(self):
         stack = self.start(COMPLETE)
         self.assertEqual(stack['type'], 'optional_cards')
