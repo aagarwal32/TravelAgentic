@@ -51,10 +51,27 @@ def _share(value: float | None) -> float | None:
 
 
 def _match_markets(db: Session, name: str) -> dict[int, str]:
-    """Every DOT city market whose name starts with `name` (case-insensitive), as {id: name}."""
+    """DOT city markets whose name starts with `name` (case-insensitive), as {id: name}.
+
+    When several match, a market whose city part (before the comma) is exactly
+    `name` wins: "Charlotte" means "Charlotte, NC", not "Charlottesville, VA", and
+    "Jacksonville" means "Jacksonville, FL", not "Jacksonville/Camp Lejeune, NC".
+    Two exact matches ("Portland" -> ME and OR) stay ambiguous.
+    """
     prefix = (name or "").strip()
     if not prefix:
         return {}
+    matches = _prefix_matches(db, prefix)
+    if len(matches) > 1:
+        exact = {market_id: market for market_id, market in matches.items()
+                 if market.split(",")[0].strip().casefold() == prefix.casefold()}
+        if len(exact) == 1:
+            return exact
+    return matches
+
+
+def _prefix_matches(db: Session, prefix: str) -> dict[int, str]:
+    """Every DOT city market whose name starts with `prefix` (case-insensitive)."""
     # A market can show up in either column, so search both sides of the table.
     # autoescape makes "%" and "_" in the user's text literal, not wildcards.
     query = union(
@@ -71,9 +88,10 @@ def find_city_market(db: Session, name: str) -> int | None:
 
     Matching is a case-insensitive "starts with" on the DOT market name, so
     "chicago" finds "Chicago, IL" and "new york" finds "New York City, NY
-    (Metropolitan Area)". Returns None when nothing matches, and also when more
-    than one market matches ("Portland" is both "Portland, ME" and "Portland, OR"):
-    we never guess between cities.
+    (Metropolitan Area)". An exact city name beats longer names that start with
+    it ("Charlotte" -> "Charlotte, NC", not "Charlottesville, VA"). Returns None
+    when nothing matches, and also when more than one market still matches
+    ("Portland" is both "Portland, ME" and "Portland, OR"): we never guess between cities.
     """
     matches = _match_markets(db, name)
     return next(iter(matches)) if len(matches) == 1 else None

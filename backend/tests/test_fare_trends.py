@@ -38,6 +38,11 @@ PORTLAND_OR = (34057, "Portland, OR")
 PORTLAND_ME = (34321, "Portland, ME")
 MIAMI = (32467, "Miami, FL (Metropolitan Area)")
 TAMPA = (33195, "Tampa, FL (Metropolitan Area)")
+# Real DOT pairs where one city's full name is the start of another market's name
+CHARLOTTE = (31057, "Charlotte, NC")
+CHARLOTTESVILLE = (30990, "Charlottesville, VA")
+JACKSONVILLE_FL = (31136, "Jacksonville, FL")
+JACKSONVILLE_NC = (33795, "Jacksonville/Camp Lejeune, NC")
 
 _tbl6pk = count(1)
 
@@ -73,6 +78,9 @@ def sample_rows() -> list[AirfareQuarter]:
         fare_row(CHICAGO, PORTLAND_ME, 2024, 3, 400.0),
         # Tampa only appears as city2.
         fare_row(MIAMI, TAMPA, 2024, 1, 90.0),
+        fare_row(CHARLOTTE, CHARLOTTESVILLE, 2024, 2, 300.0),
+        fare_row(JACKSONVILLE_FL, DENVER, 2024, 3, 250.0),
+        fare_row(TAMPA, JACKSONVILLE_NC, 2024, 3, 210.0),
     ]
 
 
@@ -114,6 +122,19 @@ class FindCityMarketTests(FareTrendsTestCase):
     def test_ambiguous_city_returns_none(self):
         self.assertIsNone(find_city_market(self.db, "Portland"))
         self.assertIsNone(find_city_market(self.db, "p"))
+
+    def test_exact_city_name_beats_longer_names(self):
+        self.assertEqual(find_city_market(self.db, "Charlotte"), CHARLOTTE[0])
+        self.assertEqual(find_city_market(self.db, "charlottesville"), CHARLOTTESVILLE[0])
+        self.assertEqual(find_city_market(self.db, "Jacksonville"), JACKSONVILLE_FL[0])
+        self.assertEqual(find_city_market(self.db, "Jacksonville/Camp"), JACKSONVILLE_NC[0])
+        self.assertIsNone(find_city_market(self.db, "Charlott"))  # partial name: still ambiguous
+
+    def test_exact_city_name_works_in_route_functions(self):
+        result = get_price_trend(self.db, "Charlotte", "Charlottesville")
+        self.assertEqual((result["origin"], result["destination"]), ("Charlotte, NC", "Charlottesville, VA"))
+        result = get_cheapest_quarters(self.db, "jacksonville", "Denver")
+        self.assertEqual(result["origin"], "Jacksonville, FL")
 
 
 class RouteFilterTests(FareTrendsTestCase):
