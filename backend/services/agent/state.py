@@ -15,12 +15,9 @@ class TripConstraints(BaseModel):
     budget: Optional[float] = Field(None, gt=0)   
     travelers: Optional[int] = Field(None, ge=1, le=9)
     return_date: Optional[date] = None
-    driver_age: Optional[int] = Field(None, ge=18, le=99)
-    needs_car: Optional[bool] = None
     max_connections: Optional[int] = Field(None, ge=0, le=2)
     activities: Optional[list[str]] = None
     hotel_preferences: Optional[str] = None
-    budget_scope: Optional[Literal["per_person", "total"]] = None
 
     @field_validator("origin", "destination", "hotel_preferences")
     @classmethod
@@ -52,7 +49,7 @@ class TripConstraints(BaseModel):
         return self
 
 REQUIRED = ["origin", "destination", "mode", "trip_type", "budget", "travelers"]
-OPTIONAL = ["needs_car", "max_connections", "activities", "hotel_preferences"]
+OPTIONAL = ["max_connections", "activities", "hotel_preferences"]
 
 def compute_missing(c: TripConstraints) -> list[str]:
     missing = [f for f in REQUIRED if getattr(c, f) is None]
@@ -61,14 +58,13 @@ def compute_missing(c: TripConstraints) -> list[str]:
         missing.append("depart_date")
     if c.trip_type == "round_trip" and not c.return_date:
         missing.append("return_date")
-    if c.needs_car and c.driver_age is None:
-        missing.append("driver_age")
     return missing
 
 class TripState(TypedDict):
     model: NotRequired[str]
-    errors: NotRequired[list[str]]
-    ready: NotRequired[bool]
+    pending_answers: NotRequired[list[dict]]   # answers waiting for extract
+    optional_asked: NotRequired[bool]          # optional stack already shown
+    field_error: NotRequired[Optional[str]]    # error text for the next card
     messages: Annotated[list, add_messages]   
     constraints: dict                       
     missing: list[str]
