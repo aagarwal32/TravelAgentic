@@ -19,6 +19,10 @@ class Settings(BaseSettings):
     LITEAPI_BASE_URL: str = "https://api.liteapi.travel/v3.0"
     LITEAPI_DAILY_LIMIT: int = 200
 
+    # Claude API (the agent's LLM). Optional at startup; AI calls fail clearly without it.
+    ANTHROPIC_API_KEY: Optional[str] = None
+    LLM_MODEL: str = "claude-haiku-5-5"
+
     @field_validator("ALLOWED_ORIGINS")
     def parse_allowed_origins(cls, v: str) -> List[str]:
         return v.split(",") if v else []

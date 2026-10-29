@@ -82,6 +82,12 @@ def to_pending(card: dict, answer) -> dict:
     if not isinstance(answer, dict) or ("value" in answer) + ("text" in answer) != 1:
         raise ValueError('Resume with {"value": ...} or {"text": ...}.')
     kind = "value" if "value" in answer else "text"
+    # Enforce the card's input type here, not only in the frontend: picker cards never
+    # cost an AI call, and text cards always get the AI's cleanup ("O'Hare" -> "Chicago")
+    if kind == "text" and card["input"] != "text" and not card.get("allow_text"):
+        raise ValueError(f'{card["field"]} takes a picked value: resume with {{"value": ...}}.')
+    if kind == "value" and card["input"] == "text":
+        raise ValueError(f'{card["field"]} takes typed text: resume with {{"text": ...}}.')
     return {"field": card["field"], "question": card["text"], kind: answer[kind]}
 
 def clarify(state: TripState) -> dict:
@@ -91,4 +97,9 @@ def clarify(state: TripState) -> dict:
     card = build_card(state["missing"][0], c)
     answer = interrupt({"type": "required_question", "card": card,
                         "error": state.get("field_error")})
-    return {"pending_answers": [to_pending(card, answer)]}
+    try:
+        pending = to_pending(card, answer)
+    except ValueError:
+        # Raising here would leave the chat stuck; extract shows the card again with its error
+        pending = {"field": card["field"], "question": card["text"], "rejected": True}
+    return {"pending_answers": [pending]}

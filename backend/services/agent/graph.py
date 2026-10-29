@@ -25,8 +25,16 @@ def ask_optional(state: TripState) -> dict:
     cards = [build_card(f, c) for f in fields]
     reply = interrupt({"type": "optional_cards", "cards": cards})
     answers = reply.get("answers", {}) if isinstance(reply, dict) else {}
-    pending = [to_pending(card, answers[card["field"]]) for card in cards if card["field"] in answers]
-    skipped += [f for f in fields if f not in answers]
+    pending = []
+    for card in cards:
+        if card["field"] not in answers:
+            continue
+        try:
+            pending.append(to_pending(card, answers[card["field"]]))
+        except ValueError:
+            pass  # wrong kind for the card: treated as unanswered, so it's skipped below
+    answered = {a["field"] for a in pending}
+    skipped += [f for f in fields if f not in answered]
     return {"pending_answers": pending, "skipped": skipped, "optional_asked": True}
 
 
@@ -63,15 +71,28 @@ def start_state(request: str, model: str) -> dict:
             "model": model, "constraints": {}, "missing": [], "skipped": []}
 
 
-def parse_line(card: dict, line: str) -> dict:
-    """Send a line as a fixed value if it fits the card's picker/buttons, else as text."""
+def parse_line(card: dict, line: str) -> dict | None:
+    """Turn a typed line into a resume answer, like the frontend's widget would.
+
+    Picker cards accept only a value that fits them; None means "ask again".
+    Text cards (and picker cards with allow_text) send anything else as text.
+    """
     kind = card["input"]
-    if kind == "number" and line.isdigit():
-        return {"value": int(line)}
+    if kind == "number":
+        try:
+            number = float(line.replace("$", "").replace(",", "").strip())
+        except ValueError:
+            number = None
+        if number is not None:
+            return {"value": int(number) if number.is_integer() else number}
     if kind == "choice":
-        for option in card["options"]:
-            if line.lower() in (str(option["value"]).lower(), option["label"].lower()):
-                return {"value": option["value"]}
+        typed = line.lower()
+        exact = [o for o in card["options"] if typed in (str(o["value"]).lower(), o["label"].lower())]
+        # "round" picks "Round trip" when only one label starts with it
+        starts = [o for o in card["options"] if o["label"].lower().startswith(typed)]
+        picked = exact or (starts if len(starts) == 1 else [])
+        if picked:
+            return {"value": picked[0]["value"]}
     if kind in ("date", "date_or_range"):
         parts = [p.strip() for p in line.split(" to ")]
         try:
@@ -82,7 +103,23 @@ def parse_line(card: dict, line: str) -> dict:
             return {"value": dates[0]}
         if len(dates) == 2 and kind == "date_or_range":
             return {"value": {"start": dates[0], "end": dates[1]}}
-    return {"text": line}
+    if kind == "text" or card.get("allow_text"):
+        return {"text": line}
+    return None
+
+
+def ask(card: dict, optional: bool = False) -> dict | None:
+    """Prompt until the line fits the card. Optional cards return None on Enter (skip)."""
+    while True:
+        line = input(describe(card) + "\n> ").strip()
+        if not line:
+            if optional:
+                return None
+            continue
+        answer = parse_line(card, line)
+        if answer is not None:
+            return answer
+        print("! That doesn't fit this card; use one of the options shown.")
 
 
 def describe(card: dict) -> str:
@@ -101,10 +138,10 @@ def describe(card: dict) -> str:
 
 
 def main():
-    from services.agent.nodes.chatgpt_auth import choose_model
-    parser = argparse.ArgumentParser(description="Card-based trip intake with ChatGPT OAuth")
-    parser.add_argument("--model", help="Available model slug; otherwise choose after sign-in")
-    parser.add_argument("--graph-only", action="store_true", help="Render the graph without signing in")
+    from core.config import settings
+    parser = argparse.ArgumentParser(description="Card-based trip intake using the Claude API")
+    parser.add_argument("--model", help="Claude model id; defaults to LLM_MODEL in backend/.env")
+    parser.add_argument("--graph-only", action="store_true", help="Render the graph without calling the model")
     args = parser.parse_args()
     graph = build_graph()
     image_path = Path(__file__).with_name("trip_intake_graph.png")
@@ -118,7 +155,8 @@ def main():
             raise SystemExit(1) from None
     if args.graph_only:
         return
-    model = args.model or choose_model()
+    model = args.model or settings.LLM_MODEL
+    print(f"Using model {model}")
     config = {"configurable": {"thread_id": str(uuid4())}}
     try:
         request = input("Your trip: ").strip()
@@ -131,26 +169,23 @@ def main():
             if pause["type"] == "required_question":
                 if pause["error"]:
                     print("!", pause["error"])
-                line = ""
-                while not line:
-                    line = input(describe(pause["card"]) + "\n> ").strip()
-                resume = parse_line(pause["card"], line)
+                resume = ask(pause["card"])
             else:
                 print("Optional (press Enter to skip):")
                 answers = {}
                 for card in pause["cards"]:
-                    line = input(describe(card) + "\n> ").strip()
-                    if line:
-                        answers[card["field"]] = parse_line(card, line)
+                    answer = ask(card, optional=True)
+                    if answer is not None:
+                        answers[card["field"]] = answer
                 resume = {"answers": answers}
             result = graph.invoke(Command(resume=resume), config)
         print("\n" + result["messages"][-1].content)
         print(json.dumps(result["constraints"], indent=2))
     except (EOFError, KeyboardInterrupt):
         print("\nIntake ended.")
-    except Exception:
-        # SDK exceptions can include request/response details. Keep demo errors generic.
-        print("The request failed. Check your connection, OAuth sign-in, and selected model.")
+    except RuntimeError as e:
+        # llm.generate raises short messages that never include the API key
+        print(f"The request failed: {e}")
         raise SystemExit(1) from None
 
 

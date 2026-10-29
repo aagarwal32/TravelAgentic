@@ -7,6 +7,10 @@ from services.agent.state import TripConstraints, TripState, compute_missing
 from services.agent.nodes.clarify import COULD_NOT_UNDERSTAND, DATE_FIELDS, ERROR_TEXT, merge_answers
 
 
+# Keys an answer to this card can fill (a departure can be a date or a window)
+ANSWER_KEYS = {"depart_date": {"depart_date", "flexible_start", "flexible_end"}}
+
+
 def fixed_patch(field: str, value) -> dict:
     """Turn one picker/button answer into fields to save; validation happens on merge."""
     if field == "depart_date":
@@ -15,6 +19,26 @@ def fixed_patch(field: str, value) -> dict:
                     "depart_date": None}
         return {"depart_date": value, "flexible_start": None, "flexible_end": None}
     return {field: value}
+
+
+def parse_json_object(raw: str) -> dict:
+    """Parse the AI's JSON reply, tolerating a ```json fence or text around the object.
+
+    Returns {} (nothing saved) when there is no JSON object to read.
+    """
+    text = raw.strip()
+    try:
+        data = json.loads(text)
+    except (ValueError, TypeError):
+        # Fall back to the outermost {...}: covers ```json fences and a sentence before/after
+        start, end = text.find("{"), text.rfind("}")
+        if start == -1 or end < start:
+            return {}
+        try:
+            data = json.loads(text[start:end + 1])
+        except ValueError:
+            return {}
+    return data if isinstance(data, dict) else {}
 
 
 def ai_patch(model: str, current: TripConstraints, typed: list[dict]) -> dict:
@@ -28,12 +52,7 @@ def ai_patch(model: str, current: TripConstraints, typed: list[dict]) -> dict:
                     "constraints": current.model_dump(mode="json"),
                     "answers": [{"field": a["field"], "question": a["question"], "text": a["text"]}
                                 for a in typed]}))
-    try:
-        patch = json.loads(raw)
-    except (ValueError, TypeError):
-        return {}
-    if not isinstance(patch, dict):
-        return {}
+    patch = parse_json_object(raw)
     # null is only allowed for date fields (switching between an exact date and a window);
     # any other null would erase a saved answer, so it's ignored like a left-out field
     return {k: v for k, v in patch.items()
@@ -51,8 +70,8 @@ def extract(state: TripState) -> dict:
         patch.update(fixed_patch(a["field"], a["value"]))
     merged = merge_answers(current, patch)
     # Pass merged so the AI sees fixed answers saved this run (e.g. travelers for "$250 each")
-    if typed:
-        merged = merge_answers(merged, ai_patch(state["model"], merged, typed))
+    ai = ai_patch(state["model"], merged, typed) if typed else {}
+    merged = merge_answers(merged, ai)
     missing = compute_missing(merged)
 
     field_error = None
@@ -63,7 +82,12 @@ def extract(state: TripState) -> dict:
             continue
         if field in ERROR_TEXT:
             if field in missing:
-                field_error = ERROR_TEXT[field] if "value" in a else COULD_NOT_UNDERSTAND
+                # The AI read a typed answer but the value was invalid: show the card's own
+                # message. COULD_NOT_UNDERSTAND is only for replies with nothing usable.
+                # A rejected answer (wrong kind for the card) counts as a fixed answer here
+                understood = ("value" in a or a.get("rejected")
+                              or ANSWER_KEYS.get(field, {field}) & ai.keys())
+                field_error = ERROR_TEXT[field] if understood else COULD_NOT_UNDERSTAND
         elif getattr(merged, field) is None and field not in skipped:
             skipped.append(field)
 
