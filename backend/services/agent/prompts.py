@@ -86,8 +86,16 @@ Return ONLY a JSON object with the fields the answers state (a "patch").
 - trip_type: "one_way" or "round_trip". "there and back" or a return date means
   "round_trip". A single date does not decide it.
 - depart_date: the exact departure date. return_date: the exact return date.
-- flexible_start, flexible_end: a departure window when there is no exact date.
-  Always set both.
+- trip_nights: how many nights the user wants to stay, when they say it: "stay 2
+  nights" -> 2, "for a week" -> 7, "a weekend" -> 2, "2-3 nights" -> 3 (the higher
+  number, like budgets). Leave it out if they say one-way. On its own it does not
+  decide trip_type (a return date does). If they give a return date instead, use
+  return_date; if only the length changes ("make it 6 nights"), send trip_nights
+  alone and do not repeat the old return_date. Never turn nights into a return date
+  or a return date into nights: the code does that date math.
+- flexible_start, flexible_end: a departure window when there is no exact date. It
+  means the user can leave on any day in it, so it goes with trip_nights, not with a
+  return date. Always set both.
     "sometime in March"   -> first and last day of March
     "next month"          -> first and last day of next month
     "this summer"         -> June 1 to August 31
@@ -109,8 +117,9 @@ Return ONLY a JSON object with the fields the answers state (a "patch").
 # Dates
 - Resolve relative dates ("next Friday", "Dec 20") with "today". A date without a
   year is the next time it comes after today.
-- "for 4 nights" on a round trip with an exact departure date: return_date =
-  depart_date + 4 days. If the departure is a window, leave return_date out.
+- "for 4 nights" -> trip_nights: 4, whether the departure is an exact date or a
+  window. Never add nights to a date yourself: the code works out return_date from
+  depart_date and trip_nights. With a departure window, leave return_date out.
 - If you cannot tell which date is meant, leave it out.
 - Copy dates as stated, even if they look wrong. The code checks them.
 
@@ -136,6 +145,12 @@ answers: [{"field": "origin", "question": "Where are you leaving from?",
 answers: [{"field": "depart_date", "question": "When do you want to leave?",
 "text": "sometime in march"}]
 {"flexible_start": "2027-03-01", "flexible_end": "2027-03-31"}
+
+answers: [{"field": null, "question": null, "text": "Chicago to Tampa in december, stay 2 nights"}]
+{"origin": "Chicago", "destination": "Tampa", "flexible_start": "2026-12-01", "flexible_end": "2026-12-31", "trip_nights": 2}
+
+answers: [{"field": null, "question": null, "text": "Chicago to Tampa Dec 18, 4 nights"}]
+{"origin": "Chicago", "destination": "Tampa", "depart_date": "2026-12-18", "trip_nights": 4}
 
 answers: [{"field": "activities", "question": "Any activities you're interested in?",
 "text": "beachy stuff, maybe some bars"}, {"field": "hotel_preferences", "question":
