@@ -38,6 +38,49 @@ DATASETS = [
         # file changes and a fixed checksum would break the download.
         "sha256": None,
     },
+    # The five location datasets below are loaded together by scripts/ingest_locations.py
+    # (see docs/data.md). All are public domain.
+    {
+        "name": "us_places_gazetteer",
+        # Census Bureau 2024 Gazetteer: every US incorporated place and census-designated
+        # place with its coordinates. A fixed release, so it has a checksum.
+        "url": "https://www2.census.gov/geo/docs/maps-data/data/gazetteer/2024_Gazetteer/2024_Gaz_place_national.zip",
+        "filename": "us_places_gazetteer_2024.zip",
+        "sha256": "cf262fc92b2326f7a8c62a89d156a60eb17d64d6d35f7a62310c43bb08972c06",
+    },
+    {
+        "name": "us_places_population",
+        # Census Bureau ACS 2020-2024 5-year estimates, table B01003 (total population) for
+        # every geography; ingestion keeps the places, matching the Gazetteer's 2024 places.
+        "url": "https://www2.census.gov/programs-surveys/acs/summary_file/2024/table-based-SF/data/5YRData/acsdt5y2024-b01003.dat",
+        "filename": "us_places_population_2024.dat",
+        "sha256": "38d1a992bb058d184009b10b9b34987279aee575e4323165cfb5706c69b6ca90",
+    },
+    {
+        "name": "us_places_centers",
+        # USGS GNIS Federal Codes: each "Populated Place" (its traditional center, e.g. Civic
+        # Center for San Francisco) with its Census place code. Gives cities a downtown point
+        # for hotel searches. USGS republishes it every few months, so no checksum.
+        "url": "https://prd-tnm.s3.amazonaws.com/StagedProducts/GeographicNames/FederalCodes/FedCodes_National_Text.zip",
+        "filename": "us_places_centers_gnis.zip",
+        "sha256": None,
+    },
+    {
+        "name": "ourairports",
+        # OurAirports: every airport in the world. OurAirports updates it nightly, so no checksum.
+        "url": "https://ourairports.com/data/airports.csv",
+        "filename": "ourairports_airports.csv",
+        "sha256": None,
+    },
+    {
+        "name": "dot_table1a_airports",
+        # DOT Consumer Airfare Report Table 1a (airport-pair markets), grouped by the API into
+        # one row per airport pair with each airport's DOT city market id (2022+, ~90 KB).
+        # It links airports to the market ids Table 6 uses. New quarters change it: no checksum.
+        "url": "https://data.transportation.gov/resource/tfrh-tu9e.csv?$select=airport_1,citymarketid_1,city1,airport_2,citymarketid_2,city2,max(year)%20as%20last_year&$where=year%3E=2022&$group=airport_1,citymarketid_1,city1,airport_2,citymarketid_2,city2&$order=airport_1,airport_2&$limit=100000",
+        "filename": "dot_table1a_airports.csv",
+        "sha256": None,
+    },
 ]
 
 CHUNK_SIZE = 1024 * 1024
@@ -65,6 +108,11 @@ def download(url: str, dest: Path) -> None:
             else:
                 print(f"\r  {done / 1e6:,.1f} MB", end="", flush=True)
     print()
+    # A dropped connection can end the read early without an error; never keep a cut-off
+    # file (datasets without a checksum would otherwise load it silently).
+    if total and done != total:
+        tmp.unlink()
+        raise OSError(f"incomplete download: got {done:,} of {total:,} bytes")
     shutil.move(tmp, dest)
 
 

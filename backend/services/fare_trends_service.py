@@ -8,9 +8,13 @@ What the numbers mean (read this before showing them to a user):
   be city1. Chicago -> Denver and Denver -> Chicago are the same route.
 - Small markets (and many Hawaii / Alaska routes) are not in Table 6 at all.
 
-Every function takes city names as the user said them ("Chicago", "denver") and
-returns a plain dict that a LangGraph tool can hand to the LLM as is. When there is
-no data, or a city is unknown or ambiguous, the result is
+The agent's trends node (not built yet) should call the *_for_markets functions: they
+take the DOT city market ids of the places resolved during intake (Place.dot_market_id,
+see services/location_service.py), so they never interpret a city name. The original functions take city names as the
+user said them ("Chicago", "denver"); they are thin wrappers kept for testing by hand
+and give the same results. Every function returns a plain dict that a LangGraph tool
+can hand to the LLM as is. When there is no data, a market id is missing, or a city is
+unknown or ambiguous, the result is
     {"no_history": True, "reason": "..."}
 instead of an exception, so the trip search can continue with live prices only.
 All aggregation happens in SQL; dollar amounts are rounded to cents.
@@ -114,6 +118,34 @@ def _resolve_route(db: Session, origin_city: str, dest_city: str) -> tuple[_Rout
     return _Route(*resolved), None
 
 
+def _market_names(db: Session, market_ids: set[int]) -> dict[int, str]:
+    """DOT market names for the given ids, as {id: name}; ids not in Table 6 are left out."""
+    query = union(
+        select(AirfareQuarter.citymarketid_1, AirfareQuarter.city1)
+        .where(AirfareQuarter.citymarketid_1.in_(market_ids)),
+        select(AirfareQuarter.citymarketid_2, AirfareQuarter.city2)
+        .where(AirfareQuarter.citymarketid_2.in_(market_ids)),
+    )
+    return {market_id: market for market_id, market in db.execute(query)}
+
+
+def _market_route(db: Session, origin_market_id: int | None,
+                  dest_market_id: int | None) -> tuple[_Route | None, dict | None]:
+    """The route between two DOT market ids. Returns (route, None), or (None, a no_history result)."""
+    for side, market_id in (("origin", origin_market_id), ("destination", dest_market_id)):
+        if market_id is None:  # no airport with a DOT market near the place (e.g. Hawaii)
+            return None, _no_history(f"The {side} has no DOT city market (no airport with DOT data nearby).")
+    names = _market_names(db, {origin_market_id, dest_market_id})
+    for market_id in (origin_market_id, dest_market_id):
+        if market_id not in names:
+            return None, _no_history(f"DOT city market {market_id} is not in Table 6.")
+    if origin_market_id == dest_market_id:  # e.g. Fort Worth -> Dallas
+        return None, _no_history(
+            f"Both places are in the same DOT city market ({names[origin_market_id]}), "
+            "so there is no airfare history between them.")
+    return _Route(origin_market_id, names[origin_market_id], dest_market_id, names[dest_market_id]), None
+
+
 def _route_filter(a: int, b: int):
     """SQL condition for the city pair (a, b) stored in either orientation."""
     return or_(
@@ -172,8 +204,21 @@ def get_price_trend(db: Session, origin_city: str, dest_city: str) -> dict:
     and routes not in Table 6 return {"no_history": True, "reason": ...}.
     """
     route, missing = _resolve_route(db, origin_city, dest_city)
-    if missing:
-        return missing
+    return missing or _price_trend(db, route)
+
+
+def get_price_trend_for_markets(db: Session, origin_market_id: int | None,
+                                dest_market_id: int | None) -> dict:
+    """get_price_trend for two DOT city market ids (origin_place/destination_place.dot_market_id).
+
+    A missing id (None), an id not in Table 6, or two places in the same market return
+    {"no_history": True, "reason": ...}.
+    """
+    route, missing = _market_route(db, origin_market_id, dest_market_id)
+    return missing or _price_trend(db, route)
+
+
+def _price_trend(db: Session, route: _Route) -> dict:
     match = _route_filter(route.origin_id, route.dest_id)
 
     quarters = db.execute(
@@ -235,8 +280,17 @@ def get_cheapest_quarters(db: Session, origin_city: str, dest_city: str,
     or there is no data for the route (in the requested quarters).
     """
     route, missing = _resolve_route(db, origin_city, dest_city)
-    if missing:
-        return missing
+    return missing or _cheapest_quarters(db, route, quarters)
+
+
+def get_cheapest_quarters_for_markets(db: Session, origin_market_id: int | None, dest_market_id: int | None,
+                                      quarters: list[int] | None = None) -> dict:
+    """get_cheapest_quarters for two DOT city market ids (see get_price_trend_for_markets)."""
+    route, missing = _market_route(db, origin_market_id, dest_market_id)
+    return missing or _cheapest_quarters(db, route, quarters)
+
+
+def _cheapest_quarters(db: Session, route: _Route, quarters: list[int] | None) -> dict:
     match = _route_filter(route.origin_id, route.dest_id)
     if quarters is not None:
         quarters = list(quarters)
@@ -285,8 +339,17 @@ def get_carrier_baseline(db: Session, origin_city: str, dest_city: str) -> dict:
     Returns {"no_history": True, "reason": ...} when there is no data.
     """
     route, missing = _resolve_route(db, origin_city, dest_city)
-    if missing:
-        return missing
+    return missing or _carrier_baseline(db, route)
+
+
+def get_carrier_baseline_for_markets(db: Session, origin_market_id: int | None,
+                                     dest_market_id: int | None) -> dict:
+    """get_carrier_baseline for two DOT city market ids (see get_price_trend_for_markets)."""
+    route, missing = _market_route(db, origin_market_id, dest_market_id)
+    return missing or _carrier_baseline(db, route)
+
+
+def _carrier_baseline(db: Session, route: _Route) -> dict:
     match = _route_filter(route.origin_id, route.dest_id)
 
     newest = _newest_quarter(db, match)

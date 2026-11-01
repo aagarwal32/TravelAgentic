@@ -11,6 +11,7 @@ from langgraph.types import Command, interrupt
 from services.agent.state import OPTIONAL, TripConstraints, TripState
 from services.agent.nodes.extract import extract
 from services.agent.nodes.clarify import build_card, clarify, to_pending
+from services.location_service import LocationDataMissing
 
 
 def ask_optional(state: TripState) -> dict:
@@ -148,6 +149,9 @@ def main():
         print(json.dumps(result["constraints"], indent=2))
     except (EOFError, KeyboardInterrupt):
         print("\nIntake ended.")
+    except LocationDataMissing as error:  # cities are looked up in our own tables
+        print(error)
+        raise SystemExit(1) from None
     except Exception:
         # SDK exceptions can include request/response details. Keep demo errors generic.
         print("The request failed. Check your connection, OAuth sign-in, and selected model.")

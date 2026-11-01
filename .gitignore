@@ -1,0 +1,3 @@
+# Local desktop metadata and environment editor backups are never PR inputs.
+.DS_Store
+.env.save

@@ -8,6 +8,7 @@ from unittest.mock import patch
 
 with patch.dict(os.environ, {"SECRET_KEY": "test-only", "DATABASE_URL": "sqlite://", "LITEAPI_API_KEY": "test-only"}):
     from services import hotel_service as hotels
+    from services.agent.state import Place
 
 FIXTURES = Path(__file__).parent / "fixtures" / "liteapi"
 CHECKIN, CHECKOUT = date(2026, 11, 18), date(2026, 11, 21)
@@ -250,6 +251,33 @@ class HotelServiceTests(unittest.TestCase):
         self.assertTrue(result[0]["sandbox"])
         self.assertEqual(rates.call_args.args[-2:], (3, 2))
         self.assertEqual(search.call_args.kwargs["radius_m"], 5000)
+
+    def test_combined_search_uses_resolved_place_coordinates(self):
+        place = Place(id="us-co-denver", city="Denver", state="CO", latitude=39.7392, longitude=-104.9847,
+                      airports=["DEN"], dot_market_id=30325)
+        candidates = [{"hotel_id": "near", "name": "Near Hotel", "distance_km": 1}]
+        with patch.object(hotels, "get_city_location", side_effect=AssertionError("no city lookup")) as city, \
+             patch.object(hotels, "search_hotels_near", return_value=candidates) as search, \
+             patch.object(hotels, "get_cheapest_rates", return_value=[
+                 {"hotel_id": "near", "total_price": 300, "per_night": 100, "sandbox": True}]):
+            result = hotels.search_hotels_with_prices(place, CHECKIN, CHECKOUT, 2, radius_m=3000)
+        city.assert_not_called()
+        self.assertEqual(search.call_args.args, (39.7392, -104.9847))
+        self.assertEqual(search.call_args.kwargs["radius_m"], 3000)
+        self.assertEqual([hotel["hotel_id"] for hotel in result], ["near"])
+        self.request.assert_not_called()  # no LiteAPI places calls at all
+        # The same place as the graph state stores it (constraints are saved as JSON dicts)
+        with patch.object(hotels, "get_city_location") as city, \
+             patch.object(hotels, "search_hotels_near", return_value=[]) as search:
+            self.assertEqual(hotels.search_hotels_with_prices(place.model_dump(), CHECKIN, CHECKOUT, 2), [])
+        city.assert_not_called()
+        self.assertEqual(search.call_args.args, (39.7392, -104.9847))
+
+    def test_missing_place_fails_before_api(self):
+        with patch.object(hotels, "get_city_location") as city, self.assertRaises(ValueError):
+            hotels.search_hotels_with_prices(None, CHECKIN, CHECKOUT, 2)
+        city.assert_not_called()
+        self.request.assert_not_called()
 
     def test_unknown_city_or_empty_candidates_short_circuit(self):
         with patch.object(hotels, "get_city_location", return_value=None), \

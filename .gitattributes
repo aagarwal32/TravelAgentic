@@ -1,0 +1,2 @@
+# Census Gazetteer rows end in spaces; the test sample keeps the real file format.
+backend/tests/fixtures/locations/gazetteer_sample.txt -whitespace
