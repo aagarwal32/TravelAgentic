@@ -100,6 +100,9 @@ DATABASE_URL=sqlite:///./database.db
 ALLOWED_ORIGINS=http://localhost:3000,http://localhost:5173
 # optional, for hotel search (see docs/hotels.md):
 LITEAPI_API_KEY=<your LiteAPI sandbox key>
+# optional, for the trip-intake agent (see docs/agent.md):
+ANTHROPIC_API_KEY=<your Claude API key>
+LLM_MODEL=claude-haiku-5-5
 ```
 
 Generate a `SECRET_KEY` with:
