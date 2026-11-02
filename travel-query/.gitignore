@@ -1,0 +1,12 @@
+# Created by the notebook when it runs outside Colab: models, checkpoints and the zip archive
+travel_query_output/
+# Archives downloaded from Colab (/content/...) and unzipped exports kept next to the notebook
+content/
+travel_query_gate/
+*.zip
+*.safetensors
+*.joblib
+# Jupyter autosave copies
+.ipynb_checkpoints/
+# Local OS and editor files
+.DS_Store
