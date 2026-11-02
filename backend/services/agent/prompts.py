@@ -76,7 +76,10 @@ Return ONLY a JSON object with the fields the answers state (a "patch").
 # Fields
 - origin, destination: the city ("Chicago", "New York"). If the user gives the state,
   keep it as its two-letter code after a comma ("Greenville, South Carolina" ->
-  "Greenville, SC"). If the user names an airport, use its city ("O'Hare" ->
+  "Greenville, SC"). If they don't, output the city name alone, even when several
+  places share it ("Greenville" -> "Greenville"): the code asks which one they mean.
+  Never add a state the user didn't give, and never leave a named city out because
+  it is ambiguous. If the user names an airport, use its city ("O'Hare" ->
   "Chicago"). Never output airport codes. If they name only a state or region
   ("Florida"), leave it out.
 - origin_place, destination_place: never output these. The code looks up the exact
@@ -140,6 +143,9 @@ and my roommate, Dec 18 to Dec 22, $250 each, no layovers"}]
 answers: [{"field": "origin", "question": "Where are you leaving from?",
 "text": "flying out of O'Hare"}]
 {"origin": "Chicago", "mode": "fly"}
+
+answers: [{"field": null, "question": null, "text": "Chicago to Greenville in march"}]
+{"origin": "Chicago", "destination": "Greenville", "flexible_start": "2027-03-01", "flexible_end": "2027-03-31"}
 
 answers: [{"field": "destination_place", "question": "Which Greenville do you mean?",
 "text": "the one in Texas"}]
