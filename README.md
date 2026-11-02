@@ -17,6 +17,7 @@ Arjun Agarwal · Saatvik Palli · Inigo Serrano · Wilson Zhu · Gia Bao Ta · E
 | [Duffel API](https://duffel.com/) | Live flight prices |
 | [LiteAPI](https://www.liteapi.travel/) | Hotels and live hotel prices near the destination ([docs/hotels.md](docs/hotels.md)) |
 | [DOT Consumer Airfare Report, Table 6](https://data.transportation.gov/d/yj5y-b2ir) | Historical average fares by city pair and quarter, 2022 onward ([docs/data.md](docs/data.md)) |
+| [Census Bureau](https://www.census.gov/) Gazetteer and ACS, [USGS GNIS](https://www.usgs.gov/us-board-on-geographic-names), [OurAirports](https://ourairports.com/data/), [DOT Table 1a](https://data.transportation.gov/d/tfrh-tu9e) | US cities, their nearby airports and DOT markets, for resolving origin and destination ([docs/data.md](docs/data.md#us-places-and-airports-location-lookup)) |
 | Kaggle Flight Prices | Possible supplement for V2 |
 
 ### ML Model
@@ -162,7 +163,7 @@ How to use each part of the project, beyond setup:
 | Doc | Covers |
 |---|---|
 | [docs/agent.md](docs/agent.md) | The trip-intake agent and its terminal demo |
-| [docs/data.md](docs/data.md) | Downloading datasets and loading DOT Table 6 |
+| [docs/data.md](docs/data.md) | Downloading datasets and loading DOT Table 6 and the location tables |
 | [docs/hotels.md](docs/hotels.md) | LiteAPI setup and the hotel search functions |
 
 ## Day-to-Day Git Workflow

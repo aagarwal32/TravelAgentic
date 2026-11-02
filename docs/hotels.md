@@ -45,8 +45,13 @@ hotels = search_hotels_with_prices(
 print(hotels[:3])
 ```
 
-A search looks up the US city's center, then finds hotels nearby (`/data/hotels`),
-then prices them (`/hotels/min-rates`).
+A search finds hotels near the city (`/data/hotels`), then prices them
+(`/hotels/min-rates`). The service accepts the trip's resolved place
+(`TripConstraints.destination_place`, see [agent.md](agent.md#places-origin-and-destination))
+instead of a name, and its coordinates are used directly. A city name, as above, still
+works for testing by hand: its center is looked up first with `get_city_location`
+(1-6 more LiteAPI calls). The intake graph currently stops at a planning placeholder;
+calling hotel search with the saved place still needs agent integration.
 
 ## What the results mean
 

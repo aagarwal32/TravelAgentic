@@ -26,8 +26,11 @@ from services.fare_trends_service import (
     _route_filter,
     find_city_market,
     get_carrier_baseline,
+    get_carrier_baseline_for_markets,
     get_cheapest_quarters,
+    get_cheapest_quarters_for_markets,
     get_price_trend,
+    get_price_trend_for_markets,
     quarters_in_window,
 )
 
@@ -251,6 +254,48 @@ class NoHistoryTests(FareTrendsTestCase):
         for function in self.FUNCTIONS:
             with self.subTest(function=function.__name__):
                 self.assertNoHistory(function(self.db, "Chicago", "Denver"))
+
+
+class MarketIdTests(FareTrendsTestCase):
+    """The *_for_markets functions take Place.dot_market_id instead of city names."""
+    PAIRS = ((get_price_trend, get_price_trend_for_markets),
+             (get_cheapest_quarters, get_cheapest_quarters_for_markets),
+             (get_carrier_baseline, get_carrier_baseline_for_markets))
+
+    def test_same_results_as_the_name_based_functions(self):
+        for by_name, by_market in self.PAIRS:
+            with self.subTest(function=by_market.__name__):
+                self.assertEqual(by_market(self.db, CHICAGO[0], DENVER[0]), by_name(self.db, "Chicago", "Denver"))
+                self.assertEqual(by_market(self.db, DENVER[0], CHICAGO[0]), by_name(self.db, "Denver", "Chicago"))
+                self.assertEqual(by_market(self.db, CHARLOTTE[0], CHARLOTTESVILLE[0]),
+                                 by_name(self.db, "Charlotte", "Charlottesville"))
+        result = get_price_trend_for_markets(self.db, CHICAGO[0], DENVER[0])
+        self.assertEqual((result["origin"], result["avg_fare"]), ("Chicago, IL", 206.0))
+
+    def test_quarter_filter_is_passed_on(self):
+        self.assertEqual(get_cheapest_quarters_for_markets(self.db, DENVER[0], CHICAGO[0], quarters=[4, 2]),
+                         get_cheapest_quarters(self.db, "Denver", "Chicago", quarters=[4, 2]))
+        self.assertNoHistory(get_cheapest_quarters_for_markets(self.db, PORTLAND_OR[0], DENVER[0], quarters=[3]),
+                             "Portland, OR", "Denver, CO", "[3]")
+
+    def test_missing_market_id_is_no_history(self):
+        for _, by_market in self.PAIRS:
+            with self.subTest(function=by_market.__name__):
+                self.assertNoHistory(by_market(self.db, None, DENVER[0]), "origin")
+                self.assertNoHistory(by_market(self.db, CHICAGO[0], None), "destination")
+                self.assertNoHistory(by_market(self.db, None, None))
+
+    def test_unknown_or_same_market_or_no_route(self):
+        for _, by_market in self.PAIRS:
+            with self.subTest(function=by_market.__name__):
+                self.assertNoHistory(by_market(self.db, CHICAGO[0], 99999), "99999")
+                self.assertNoHistory(by_market(self.db, CHICAGO[0], CHICAGO[0]), "same DOT city market", "Chicago, IL")
+                self.assertNoHistory(by_market(self.db, CHICAGO[0], MIAMI[0]), "Chicago, IL", "Miami, FL")
+
+    def test_markets_named_alike_are_never_ambiguous(self):
+        # "Portland" is ambiguous by name, but a market id is exact
+        result = get_price_trend_for_markets(self.db, PORTLAND_OR[0], DENVER[0])
+        self.assertEqual(result["origin"], "Portland, OR")
 
 
 class QuartersInWindowTests(unittest.TestCase):
