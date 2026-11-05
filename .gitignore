@@ -1,0 +1,4 @@
+# macOS Finder metadata
+.DS_Store
+# Editor backups of .env
+.env.save

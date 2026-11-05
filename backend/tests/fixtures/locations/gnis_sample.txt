@@ -1,0 +1,14 @@
+﻿feature_id|feature_name|feature_class|census_code|census_class_code|gsa_code|opm_code|state_name|state_numeric|county_sequence|county_name|county_numeric|date_created|date_edited|bgn_type|bgn_authority|bgn_date|prim_lat_dms|prim_long_dms|prim_lat_dec|prim_long_dec
+277593|San Francisco|Populated Place|67000|P1|3290|3290|California|06|1|San Francisco|075|01/19/1981|06/07/2022|Official|Board Decision|01/01/1931|374630N|1222510W|37.775|-122.4194444
+277593|San Francisco|Populated Place|67000|P1|3290|3290|California|06|2|San Mateo|081|01/19/1981|06/07/2022|Official|Board Decision|01/01/1931|374630N|1222510W|37.5|-122.3
+765765|Saint Louis|Populated Place|65000|P1|7080|7080|Missouri|29|1|St. Louis (city)|510|10/24/1980|07/12/2012|Official|Board Decision|01/01/1931|383738N|0901152W|38.6272733|-90.1978889
+767557|City of Saint Louis|Civil|65000|C7|||Missouri|29|1|St. Louis (city)|510|08/01/1991|01/17/2026||||383809N|0901442W|38.6358171|-90.245094
+1023721|Greenville|Populated Place|28080|P1|1950|1950|North Carolina|37|1|Pitt|147|07/01/1994|06/07/2022||||353646N|0772159W|44.0|-100.0
+1245842|Greenville|Populated Place|30850|P1|1040|1040|South Carolina|45|1|Greenville|045|07/13/1980|06/07/2022|Official|Board Decision|01/01/1944|345109N|0822338W|34.8526176|-82.3940105
+1652484|Nashville|Populated Place|52000|C4|1760|1760|Tennessee|47|1|Davidson|037|05/19/1980|06/07/2022|Official|Board Decision|01/01/1931|360957N|0864704W|36.1658899|-86.7844432
+208882|Milford|Populated Place|47500|P1|0385|0385|Connecticut|09|1|South Central Connecticut|170|09/12/1979|03/18/2011||||411320N|0730323W|41.2223194|-73.0564953
+999999|Milford|Populated Place|||||Connecticut|09|1|Litchfield|005|01/01/2000|01/01/2000||||414500N|0731500W|41.75|-73.25
+1584371|City of Waukesha|Civil|84250|C5|||Wisconsin|55|1|Waukesha|133|09/01/1995|08/10/2023||||430031N|0881447W|43.0087079|-88.2463439
+1584372|Village of Waukesha|Civil|84275|C5|||Wisconsin|55|1|Waukesha|133|09/01/1995|08/11/2023||||425737N|0881453W|42.9601843|-88.2480248
+2389881|Greenville Census Designated Place|Census|30609|U1|||New York|36|1|Greene|039|02/19/2008|08/08/2023||||422450N|0740109W|42.4138742|-74.0191471
+2389882|Greenville Census Designated Place|Census|30642|U1|||New York|36|1|Westchester|119|02/19/2008|08/08/2023||||405955N|0734908W|40.9985648|-73.818879

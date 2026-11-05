@@ -6,10 +6,31 @@ from pydantic import BaseModel, Field, model_validator, field_validator, ConfigD
 # How long a round trip can be, whether the user gives nights or a return date
 TRIP_NIGHTS_MIN, TRIP_NIGHTS_MAX = 1, 30
 
+
+class Place(BaseModel):
+    """One exact US place that a typed city resolved to (services/location_service.py).
+
+    Intake resolves origin and destination once and saves the Place, so hotels, fare
+    trends and flights all use the same city instead of each interpreting the name.
+    """
+    model_config = ConfigDict(extra="forbid")
+    id: str                    # our id, e.g. "us-sc-greenville"
+    city: str                  # "Greenville"
+    state: str                 # "SC"
+    latitude: float
+    longitude: float
+    airports: list[str]        # nearby airports with scheduled flights, closest first: ["GSP"]
+    dot_market_id: Optional[int] = None   # DOT Table 6 market of the closest airport that has one
+
+
 class TripConstraints(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    origin: Optional[str] = None
+    origin: Optional[str] = None               # what the user typed
     destination: Optional[str] = None
+    # What the text resolved to. Only code fills these (never the AI), and a changed
+    # origin/destination text clears its place so old airports never stick to a new city.
+    origin_place: Optional[Place] = None
+    destination_place: Optional[Place] = None
     mode: Optional[Literal["fly", "drive"]] = None
     trip_type: Optional[Literal["one_way", "round_trip"]] = None
     depart_date: Optional[date] = None
@@ -78,9 +99,17 @@ class TripConstraints(BaseModel):
 
 REQUIRED = ["origin", "destination", "mode", "trip_type", "budget", "travelers"]
 OPTIONAL = ["max_connections", "activities", "hotel_preferences"]
+# The place field that belongs to each city text field
+PLACE_FIELDS = {"origin": "origin_place", "destination": "destination_place"}
 
 def compute_missing(c: TripConstraints) -> list[str]:
-    missing = [f for f in REQUIRED if getattr(c, f) is None]
+    missing = []
+    for f in REQUIRED:
+        if getattr(c, f) is None:
+            missing.append(f)
+        elif f in PLACE_FIELDS and getattr(c, PLACE_FIELDS[f]) is None:
+            # The city is typed but not resolved yet (several matches): ask right after it
+            missing.append(PLACE_FIELDS[f])
     has_dates = c.depart_date or (c.flexible_start and c.flexible_end)
     if not has_dates:
         missing.append("depart_date")
@@ -102,6 +131,10 @@ class TripState(TypedDict):
     pending_answers: NotRequired[list[dict]]   # answers waiting for extract
     optional_asked: NotRequired[bool]          # optional stack already shown
     field_error: NotRequired[Optional[str]]    # error text for the next card
+    # Places offered on an open "Which Greenville?" card, as card options
+    # ({"destination_place": [{"value": "us-sc-greenville", "label": "Greenville, SC"}, ...]}).
+    # Saved by extract so clarify builds the card without a database lookup.
+    place_choices: NotRequired[dict[str, list[dict]]]
     messages: Annotated[list, add_messages]   
     constraints: dict                       
     missing: list[str]

@@ -1,11 +1,27 @@
 import json
+import os
 import unittest
+from types import SimpleNamespace
 from unittest.mock import patch
+
+# The intake looks cities up in the database (db.database needs these settings); every
+# test points it at an in-memory database of hand-made places instead.
+os.environ.setdefault("SECRET_KEY", "test-secret")
+os.environ.setdefault("DATABASE_URL", "sqlite://")
+
+import anthropic
+import httpx
 from langgraph.types import Command
-from services.agent.graph import build_graph, start_state
-from services.agent.nodes.clarify import COULD_NOT_UNDERSTAND, ERROR_TEXT, QUESTIONS, build_card, merge_answers
+from sqlalchemy.orm import sessionmaker
+from location_fixtures import DALLAS_FORT_WORTH_MARKET, GREENVILLE_SC_MARKET, ST_LOUIS_MARKET, location_engine
+from services.agent import llm
+from services.agent.graph import build_graph, parse_line, start_state
+from services.agent.nodes.clarify import (COULD_NOT_UNDERSTAND, ERROR_TEXT, PLACE_NOT_FOUND, QUESTIONS,
+                                          build_card, merge_answers)
+from services.agent.nodes.extract import parse_json_object
 from services.agent.prompts import EXTRACT_PROMPT
 from services.agent.state import REQUIRED, TripConstraints, compute_missing
+from services.location_service import LocationDataMissing
 
 COMPLETE = dict(origin='Chicago', destination='New York', mode='fly',
                 trip_type='round_trip', depart_date='2099-01-01',
@@ -15,12 +31,23 @@ FLEXIBLE = {**{k: v for k, v in COMPLETE.items() if k not in ('depart_date', 're
             'flexible_start': '2099-03-01', 'flexible_end': '2099-03-31'}
 
 
+def date_missing(c: TripConstraints) -> list[str]:
+    """compute_missing without the place cards: these tests build TripConstraints
+    directly, without the lookup that fills origin_place/destination_place."""
+    return [f for f in compute_missing(c) if f not in ('origin_place', 'destination_place')]
+
+
 class TripLoopTests(unittest.TestCase):
     def setUp(self):
         # Only the AI call in extract is mocked; each test queues the patches it returns
         patcher = patch('services.agent.nodes.extract.generate')
         self.ai = patcher.start()
         self.addCleanup(patcher.stop)
+        self.engine = location_engine()
+        self.addCleanup(self.engine.dispose)
+        places = patch('services.agent.nodes.extract.SessionLocal', sessionmaker(bind=self.engine))
+        places.start()
+        self.addCleanup(places.stop)
         self.graph = build_graph()
         self.config = {'configurable': {'thread_id': self.id()}}
 
@@ -118,13 +145,62 @@ class TripLoopTests(unittest.TestCase):
         self.assertEqual(self.constraints()['max_connections'], 0)  # never asked again, so must survive
 
     def test_ai_null_still_switches_exact_date_to_window(self):
-        self.start({k: v for k, v in COMPLETE.items() if k != 'return_date'})
+        self.start({k: v for k, v in COMPLETE.items() if k not in ('origin', 'return_date')})
         self.assertEqual(self.constraints()['depart_date'], '2099-01-01')
-        self.answer({'text': 'actually sometime in march'},
-                    ai_patch={'depart_date': None, 'flexible_start': '2099-03-01',
-                              'flexible_end': '2099-03-31', 'return_date': '2099-04-05'})
+        self.answer({'text': 'Chicago, and actually sometime in march'},
+                    ai_patch={'origin': 'Chicago', 'depart_date': None, 'flexible_start': '2099-03-01',
+                              'flexible_end': '2099-03-31'})
         self.assertIsNone(self.constraints()['depart_date'])
         self.assertEqual(self.constraints()['flexible_end'], '2099-03-31')
+
+    # each card accepts only its own kind of answer
+
+    def test_typed_text_on_picker_card_is_refused_without_ai(self):
+        self.start({k: v for k, v in COMPLETE.items() if k != 'travelers'})
+        self.ai.reset_mock()
+        card = self.answer({'text': 'me and 3 friends'})
+        self.ai.assert_not_called()
+        self.assertEqual(card['card']['field'], 'travelers')
+        self.assertEqual(card['error'], ERROR_TEXT['travelers'])
+        self.answer({'value': 4})  # the chat isn't stuck: a correct answer still works
+        self.assertEqual(self.constraints()['travelers'], 4)
+
+    def test_value_on_text_card_is_refused(self):
+        card = self.start({'destination': 'Denver'})
+        self.assertEqual(card['card']['field'], 'origin')
+        card = self.answer({'value': "O'Hare"})
+        self.assertEqual(card['card']['field'], 'origin')
+        self.assertEqual(card['error'], ERROR_TEXT['origin'])
+        self.assertIsNone(self.constraints()['origin'])
+
+    def test_depart_date_card_accepts_both_kinds(self):
+        partial = {k: v for k, v in COMPLETE.items() if k not in ('depart_date', 'return_date')}
+        self.start(partial)
+        card = self.answer({'value': '2099-01-01'})
+        self.assertEqual(card['card']['field'], 'return_date')
+        self.setUp()
+        self.start(partial)
+        card = self.answer({'text': 'early january'},
+                           ai_patch={'flexible_start': '2099-01-01', 'flexible_end': '2099-01-10'})
+        self.assertEqual(card['card']['field'], 'trip_nights')  # a window asks for the length
+
+    def test_wrong_kind_in_optional_stack_counts_as_skipped(self):
+        self.start(COMPLETE)
+        self.ai.reset_mock()
+        done = self.answer({'answers': {'max_connections': {'text': 'nonstop please'}}})
+        self.assertIsNone(done)
+        self.ai.assert_not_called()
+        self.assertIsNone(self.constraints()['max_connections'])
+        self.assertIn('max_connections', self.graph.get_state(self.config).values['skipped'])
+
+    # error text for typed answers
+
+    def test_understood_but_invalid_typed_answer_shows_card_error(self):
+        self.start({k: v for k, v in COMPLETE.items() if k not in ('depart_date', 'return_date')})
+        card = self.answer({'text': 'last january'},
+                           ai_patch={'flexible_start': '2020-01-01', 'flexible_end': '2020-01-31'})
+        self.assertEqual(card['card']['field'], 'depart_date')
+        self.assertEqual(card['error'], ERROR_TEXT['depart_date'])  # not "couldn't understand"
 
     def test_optional_stack_shown_once_and_skip_all_reaches_planning(self):
         stack = self.start(COMPLETE)
@@ -148,14 +224,17 @@ class TripLoopTests(unittest.TestCase):
         self.assertEqual(self.constraints()['activities'], ['museums', 'food'])
         self.assertEqual(self.graph.get_state(self.config).values['skipped'], ['hotel_preferences'])
 
-    def test_only_depart_date_allows_text(self):
+    def test_only_depart_date_and_place_cards_allow_text(self):
         card = self.start({k: v for k, v in COMPLETE.items() if k not in ('depart_date', 'return_date')})
         self.assertEqual(card['card']['input'], 'date_or_range')
         self.assertTrue(card['card']['allow_text'])
-        pickers = [f for f, q in QUESTIONS.items() if q['input'] != 'text' and f != 'depart_date']
+        typed_ok = ('depart_date', 'origin_place', 'destination_place')  # "I meant Greenville, Texas"
+        pickers = [f for f, q in QUESTIONS.items() if q['input'] != 'text' and f not in typed_ok]
         self.assertTrue(pickers)
         for field in pickers:
             self.assertNotIn('allow_text', QUESTIONS[field], field)
+        for field in typed_ok[1:]:
+            self.assertTrue(QUESTIONS[field]['allow_text'], field)
 
     def test_driving_trip_has_no_layover_card(self):
         stack = self.start({**COMPLETE, 'mode': 'drive'})
@@ -187,13 +266,14 @@ class TripLoopTests(unittest.TestCase):
             self.assertIn(field, ERROR_TEXT, field)
 
     def test_flexible_round_trip_requires_nights_not_return(self):
-        self.assertEqual(compute_missing(TripConstraints(**FLEXIBLE)), ['trip_nights'])
+        self.assertEqual(date_missing(TripConstraints(**FLEXIBLE)), ['trip_nights'])
 
     # trip length: nights with a departure window, nights or a return date with an exact date (issue #24)
 
     def test_window_with_nights_in_first_request_asks_no_return_or_nights_card(self):
         # the issue's example: "Chicago to Tampa in December, stay 2 nights" is one AI call, then the mode card
-        card = self.start({'origin': 'Chicago', 'destination': 'Tampa', 'flexible_start': '2099-12-01',
+        # (Denver stands in for Tampa: the test location data has no Tampa)
+        card = self.start({'origin': 'Chicago', 'destination': 'Denver', 'flexible_start': '2099-12-01',
                            'flexible_end': '2099-12-31', 'trip_nights': 2})
         self.assertEqual(card['card']['field'], 'mode')
         self.assertEqual(self.constraints()['trip_nights'], 2)
@@ -258,7 +338,7 @@ class TripLoopTests(unittest.TestCase):
         legacy = TripConstraints(**{**FLEXIBLE, 'return_date': '2099-04-05', 'trip_nights': 2})
         self.assertIsNone(legacy.return_date)
         self.assertEqual(legacy.trip_nights, 2)
-        self.assertEqual(compute_missing(legacy), [])
+        self.assertEqual(date_missing(legacy), [])
 
     def test_invalid_nights_reshow_card_with_error(self):
         self.start(FLEXIBLE)
@@ -331,7 +411,7 @@ class TripLoopTests(unittest.TestCase):
         for tag, trip in (('exact', exact), ('window', window)):
             with self.subTest(departure=tag):
                 self.new_thread(tag)
-                self.assertEqual(compute_missing(TripConstraints(**trip)), [])
+                self.assertEqual(date_missing(TripConstraints(**trip)), [])
                 self.assertEqual(self.start(trip)['type'], 'optional_cards')
 
     def test_return_card_never_asks_latest_date_back(self):
@@ -347,16 +427,332 @@ class TripLoopTests(unittest.TestCase):
         self.assertIn('"for a week" -> 7', EXTRACT_PROMPT)
         self.assertNotIn('depart_date + 4 days', EXTRACT_PROMPT)  # the AI no longer computes return dates
 
-    def test_oauth_transport(self):
-        from services.agent.llm import generate
-        from types import SimpleNamespace
-        with patch('services.agent.llm.get_access_token', return_value='mock-token'), \
-             patch('services.agent.llm.OpenAI') as client:
-            client.return_value.__enter__.return_value.responses.create.return_value.__enter__.return_value = iter([
-                SimpleNamespace(type='response.output_text.delta', delta='{}'),
-                SimpleNamespace(type='response.completed')])
-            self.assertEqual(generate('mock', 'parse', 'hello'), '{}')
-            self.assertEqual(client.call_args.kwargs['api_key'], 'mock-token')
+    # Places: origin and destination are resolved once during intake
+
+    def test_unique_city_is_saved_without_a_card(self):
+        stack = self.start({**COMPLETE, 'origin': 'Chicago', 'destination': 'Fort Worth'})
+        self.assertEqual(stack['type'], 'optional_cards')  # no place card was needed
+        place = self.constraints()['destination_place']
+        self.assertEqual(place['id'], 'us-tx-fort-worth')
+        self.assertEqual((place['city'], place['state']), ('Fort Worth', 'TX'))
+        self.assertEqual(place['airports'], ['FTW', 'DFW', 'DAL'])
+        self.assertEqual(place['dot_market_id'], DALLAS_FORT_WORTH_MARKET)
+        self.assertEqual(set(place), {'id', 'city', 'state', 'latitude', 'longitude', 'airports', 'dot_market_id'})
+        self.assertEqual(self.constraints()['origin_place']['id'], 'us-il-chicago')
+        self.assertEqual(self.constraints()['destination'], 'Fort Worth')  # the typed text is kept
+
+    def test_state_given_with_the_city_resolves_directly(self):
+        self.start({**COMPLETE, 'destination': 'Greenville, SC'})
+        self.assertEqual(self.constraints()['destination_place']['id'], 'us-sc-greenville')
+
+    def test_ambiguous_city_asks_which_one(self):
+        card = self.start({**COMPLETE, 'destination': 'Greenville'})
+        self.assertEqual(card['type'], 'required_question')
+        self.assertIsNone(card['error'])
+        self.assertEqual(card['card']['field'], 'destination_place')
+        self.assertEqual(card['card']['text'], 'Which Greenville do you mean?')
+        self.assertEqual(card['card']['input'], 'choice')
+        self.assertTrue(card['card']['allow_text'])
+        self.assertEqual(card['card']['options'], [  # biggest first, at most five
+            {'value': 'us-nc-greenville', 'label': 'Greenville, NC'},
+            {'value': 'us-sc-greenville', 'label': 'Greenville, SC'},
+            {'value': 'us-tx-greenville', 'label': 'Greenville, TX'},
+            {'value': 'us-ms-greenville', 'label': 'Greenville, MS'},
+            {'value': 'us-wi-greenville', 'label': 'Greenville, WI'}])
+        self.assertIsNone(self.constraints()['destination_place'])
+
+    def test_much_bigger_match_still_asks(self):
+        # Several matches always ask, as issue #21 says, even when one is far bigger:
+        # Charlotte, NC (904k) vs Charlotte, MI (9k), St. Louis, MO (289k) vs MI (7k)
+        card = self.start({**COMPLETE, 'origin': 'Charlotte', 'destination': 'Saint Louis'})
+        self.assertEqual(card['card']['field'], 'origin_place')
+        self.assertEqual(card['card']['options'], [{'value': 'us-nc-charlotte', 'label': 'Charlotte, NC'},
+                                                   {'value': 'us-mi-charlotte', 'label': 'Charlotte, MI'}])
+        card = self.answer({'value': 'us-nc-charlotte'})
+        self.assertEqual(card['card']['text'], 'Which St. Louis do you mean?')
+        self.assertEqual([o['value'] for o in card['card']['options']], ['us-mo-saint-louis', 'us-mi-saint-louis'])
+        self.answer({'value': 'us-mo-saint-louis'})
+        self.assertEqual(self.constraints()['origin_place']['id'], 'us-nc-charlotte')
+        self.assertEqual(self.constraints()['destination_place']['dot_market_id'], ST_LOUIS_MARKET)
+
+    def test_atlantis_is_a_real_town(self):
+        stack = self.start({**COMPLETE, 'destination': 'Atlantis'})
+        self.assertEqual(stack['type'], 'optional_cards')  # one match: saved, no error
+        self.assertEqual(self.constraints()['destination_place']['id'], 'us-fl-atlantis')
+
+    def test_picking_a_place_saves_it_without_ai(self):
+        self.start({**COMPLETE, 'destination': 'Greenville'})
+        self.ai.reset_mock()
+        stack = self.answer({'value': 'us-sc-greenville'})
+        self.ai.assert_not_called()
+        self.assertEqual(stack['type'], 'optional_cards')
+        place = self.constraints()['destination_place']
+        self.assertEqual((place['id'], place['airports'], place['dot_market_id']),
+                         ('us-sc-greenville', ['GSP'], GREENVILLE_SC_MARKET))
+        self.assertEqual(self.constraints()['destination'], 'Greenville')
+        self.assertNotIn('destination_place', self.graph.get_state(self.config).values['place_choices'])
+
+    def test_same_state_choices_are_distinct_and_save_the_selected_entity(self):
+        card = self.start({**COMPLETE, 'destination': 'Greenville, NY'})
+        self.assertEqual(card['card']['text'], 'Which Greenville do you mean?')
+        self.assertEqual(card['card']['options'], [
+            {'value': 'us-ny-greenville-3630642', 'label': 'Greenville (CDP; Westchester County), NY'},
+            {'value': 'us-ny-greenville-3630609', 'label': 'Greenville (CDP; Greene County), NY'}])
+        self.ai.reset_mock()
+        rejected = self.answer({'value': 'us-ny-greenville'})
+        self.assertEqual(rejected['error'], ERROR_TEXT['destination_place'])
+        self.answer({'value': 'us-ny-greenville-3630609'})
+        self.ai.assert_not_called()
+        place = self.constraints()['destination_place']
+        self.assertEqual((place['id'], place['latitude'], place['airports'], place['dot_market_id']),
+                         ('us-ny-greenville-3630609', 42.413789, [], None))
+
+    def test_same_state_origin_card_distinguishes_city_and_village(self):
+        card = self.start({**COMPLETE, 'origin': 'Waukesha, WI'})
+        self.assertEqual(card['card']['field'], 'origin_place')
+        self.assertEqual(card['card']['text'], 'Which Waukesha do you mean?')
+        self.assertEqual([o['label'] for o in card['card']['options']],
+                         ['Waukesha (city; Waukesha County), WI', 'Waukesha (village; Waukesha County), WI'])
+        self.ai.reset_mock()
+        self.answer({'value': 'us-wi-waukesha-5584275'})
+        self.ai.assert_not_called()
+        self.assertEqual(self.constraints()['origin_place']['latitude'], 42.960422)
+
+    def test_typed_qualified_city_replaces_the_previous_same_name_place(self):
+        self.start({**COMPLETE, 'destination': 'Greenville, NY'})
+        self.answer({'value': 'us-ny-greenville-3630609'})
+        self.answer({'answers': {'activities': {'text': 'actually the Westchester one'}}},
+                    ai_patch={'destination': 'Greenville (CDP; Westchester County), NY'})
+        self.assertEqual(self.constraints()['destination_place']['id'], 'us-ny-greenville-3630642')
+        self.assertEqual(self.constraints()['destination_place']['dot_market_id'], 31703)
+
+    def test_place_id_not_on_the_card_is_rejected(self):
+        self.start({**COMPLETE, 'destination': 'Greenville'})
+        self.ai.reset_mock()
+        # A real place, but not one of this card's options (the 6th Greenville, then Chicago)
+        for value in ('us-oh-greenville', 'us-il-chicago', {'id': 'us-sc-greenville'}):
+            with self.subTest(value=value):
+                card = self.answer({'value': value})
+                self.assertEqual(card['card']['field'], 'destination_place')
+                self.assertEqual(card['error'], ERROR_TEXT['destination_place'])
+                self.assertEqual(len(card['card']['options']), 5)
+                self.assertIsNone(self.constraints()['destination_place'])
+        self.ai.assert_not_called()
+
+    def test_typing_another_city_on_the_place_card(self):
+        self.start({**COMPLETE, 'destination': 'Greenville'})
+        self.ai.reset_mock()
+        stack = self.answer({'text': 'oh, I meant Greenville, Texas'}, ai_patch={'destination': 'Greenville, TX'})
+        self.assertEqual(self.ai.call_count, 1)
+        sent = json.loads(self.ai.call_args.args[2])
+        self.assertEqual(sent['answers'][0]['field'], 'destination_place')
+        self.assertEqual(sent['answers'][0]['question'], 'Which Greenville do you mean?')
+        self.assertEqual(stack['type'], 'optional_cards')
+        self.assertEqual(self.constraints()['destination_place']['id'], 'us-tx-greenville')
+        self.assertEqual(self.constraints()['destination'], 'Greenville, TX')
+
+    def test_typed_city_that_is_still_ambiguous_gets_the_card_error(self):
+        self.start({**COMPLETE, 'destination': 'Greenville'})
+        card = self.answer({'text': 'Portland actually'}, ai_patch={'destination': 'Portland'})
+        self.assertEqual(card['card']['text'], 'Which Portland do you mean?')
+        self.assertEqual([o['label'] for o in card['card']['options']], ['Portland, OR', 'Portland, ME'])
+        self.assertEqual(card['error'], ERROR_TEXT['destination_place'])
+        card = self.answer({'text': 'hmm'}, ai_patch={})
+        self.assertEqual(card['card']['text'], 'Which Portland do you mean?')
+        self.assertEqual(card['error'], COULD_NOT_UNDERSTAND)
+
+    def test_unknown_city_shows_the_city_card_with_the_us_only_error(self):
+        card = self.start({**COMPLETE, 'destination': 'Narnia'})
+        self.assertEqual(card['card']['field'], 'destination')
+        self.assertEqual(card['card']['input'], 'text')
+        self.assertEqual(card['error'], PLACE_NOT_FOUND)
+        self.assertIn('in the US', card['error'])
+        self.assertIn('"Greenville, SC"', card['error'])
+        self.assertIsNone(self.constraints()['destination'])
+        card = self.answer({'text': 'Denver'}, ai_patch={'destination': 'Denver'})
+        self.assertEqual(card['type'], 'optional_cards')
+        self.assertEqual(self.constraints()['destination_place']['id'], 'us-co-denver')
+
+    def test_unknown_city_is_asked_before_other_missing_fields(self):
+        card = self.start({'destination': 'Narnia'})  # origin not given yet
+        self.assertEqual(card['card']['field'], 'destination')
+        self.assertEqual(card['error'], PLACE_NOT_FOUND)
+        card = self.answer({'text': 'Denver'}, ai_patch={'destination': 'Denver'})
+        self.assertEqual(card['card']['field'], 'origin')
+        self.assertIsNone(card['error'])
+
+    # A typed answer can change the city (here on the activities text card; picker cards
+    # such as travelers only take a value, so they never reach the AI)
+
+    def test_changing_the_city_clears_the_old_place(self):
+        self.start({**COMPLETE, 'destination': 'Denver'})
+        self.assertEqual(self.constraints()['destination_place']['id'], 'us-co-denver')
+        # "hiking, and make it Greenville": the new city is ambiguous, so Denver's place must go
+        card = self.answer({'answers': {'activities': {'text': 'hiking, in Greenville instead'}}},
+                           ai_patch={'activities': ['hiking'], 'destination': 'Greenville'})
+        self.assertIsNone(self.constraints()['destination_place'])
+        self.assertEqual(card['card']['field'], 'destination_place')
+        self.answer({'value': 'us-sc-greenville'})
+        self.assertEqual(self.constraints()['destination_place']['id'], 'us-sc-greenville')
+
+    def test_changing_to_a_unique_city_replaces_the_place(self):
+        self.start({**COMPLETE, 'destination': 'Denver'})
+        self.answer({'answers': {'activities': {'text': 'hiking, going to Fort Worth'}}},
+                    ai_patch={'activities': ['hiking'], 'destination': 'Fort Worth'})
+        self.assertEqual(self.constraints()['destination_place']['id'], 'us-tx-fort-worth')
+        self.assertEqual(self.constraints()['destination_place']['airports'], ['FTW', 'DFW', 'DAL'])
+
+    def test_same_city_written_differently_keeps_the_picked_place(self):
+        self.start({**COMPLETE, 'destination': 'Greenville'})
+        self.answer({'value': 'us-sc-greenville'})
+        self.answer({'answers': {'activities': {'text': 'hiking in greenville'}}},
+                    ai_patch={'activities': ['hiking'], 'destination': 'greenville'})
+        self.assertEqual(self.ai.call_count, 2)  # the typed answer did reach the AI
+        self.assertEqual(self.constraints()['destination_place']['id'], 'us-sc-greenville')
+
+    def test_ai_cannot_set_place_fields(self):
+        fake = {'id': 'us-xx-fake', 'city': 'Fake', 'state': 'XX', 'latitude': 0, 'longitude': 0,
+                'airports': ['XXX'], 'dot_market_id': 1}
+        self.start({**COMPLETE, 'destination': 'Denver', 'destination_place': fake, 'origin_place': fake})
+        self.assertEqual(self.constraints()['destination_place']['id'], 'us-co-denver')
+        self.assertEqual(self.constraints()['origin_place']['id'], 'us-il-chicago')
+        # The AI never sees the place fields: not in the schema, not in the constraints
+        self.answer({'answers': {'activities': {'text': 'hiking'}}},
+                    ai_patch={'activities': ['hiking'], 'destination_place': fake})
+        sent = json.loads(self.ai.call_args.args[2])
+        for field in ('origin_place', 'destination_place'):
+            self.assertNotIn(field, sent['schema']['properties'])
+            self.assertNotIn(field, sent['constraints'])
+        self.assertNotIn('$defs', sent['schema'])
+        self.assertEqual(self.constraints()['destination_place']['id'], 'us-co-denver')
+
+    def test_origin_place_card_comes_right_after_the_origin(self):
+        card = self.start({**COMPLETE, 'origin': 'Greenville', 'destination': 'Portland'})
+        self.assertEqual(card['card']['field'], 'origin_place')
+        card = self.answer({'value': 'us-nc-greenville'})
+        self.assertEqual(card['card']['field'], 'destination_place')
+        self.assertEqual(card['card']['text'], 'Which Portland do you mean?')
+        self.assertIsNone(card['error'])
+        self.answer({'value': 'us-me-portland'})
+        self.assertEqual(self.constraints()['origin_place']['id'], 'us-nc-greenville')
+        self.assertEqual(self.constraints()['destination_place']['id'], 'us-me-portland')
+
+    def test_missing_place_comes_right_after_its_city(self):
+        missing = compute_missing(TripConstraints(origin='Greenville', destination='Portland'))
+        self.assertEqual(missing[:3], ['origin_place', 'destination_place', 'mode'])
+        missing = compute_missing(TripConstraints(destination='Portland'))
+        self.assertEqual(missing[:3], ['origin', 'destination_place', 'mode'])
+
+    def test_driving_trip_keeps_a_place_without_airports(self):
+        stack = self.start({**COMPLETE, 'mode': 'drive', 'destination': 'Jordan, MT'})
+        self.assertEqual([c['field'] for c in stack['cards']], ['activities', 'hotel_preferences'])
+        place = self.constraints()['destination_place']
+        self.assertEqual((place['id'], place['airports'], place['dot_market_id']), ('us-mt-jordan', [], None))
+        self.assertIsNone(self.answer({'answers': {}}))  # intake still finishes
+
+    def test_empty_location_tables_are_reported(self):
+        empty = location_engine(filled=False)
+        self.addCleanup(empty.dispose)
+        with patch('services.agent.nodes.extract.SessionLocal', sessionmaker(bind=empty)), \
+             self.assertRaises(LocationDataMissing):
+            self.start(COMPLETE)
+
+    # fenced or wrapped JSON from the AI
+
+    def test_fenced_json_reply_is_saved(self):
+        self.ai.side_effect = ['```json\n{"origin": "Chicago", "destination": "Denver"}\n```']
+        card = self._pause(self.graph.invoke(start_state('Chicago to Denver', 'mock'), self.config))
+        self.assertEqual(self.constraints()['origin'], 'Chicago')
+        self.assertEqual(card['card']['field'], 'mode')  # origin and destination aren't asked
+
+    def test_text_around_json_reply_is_saved(self):
+        self.start({'destination': 'Denver'})
+        self.ai.side_effect = ['Here are the details: {"origin": "Chicago"} Hope that helps!']
+        self._pause(self.graph.invoke(Command(resume={'text': 'Chicago'}), self.config))
+        self.assertEqual(self.constraints()['origin'], 'Chicago')
+
+    def test_reply_without_json_object_saves_nothing(self):
+        for reply in ('not json', '["Chicago"]', '{"origin": "Chicago"'):
+            with self.subTest(reply=reply):
+                self.assertEqual(parse_json_object(reply), {})
+        self.start({'destination': 'Denver'})
+        self.ai.side_effect = ['["Chicago"]']
+        card = self._pause(self.graph.invoke(Command(resume={'text': 'Chicago'}), self.config))
+        self.assertEqual(card['card']['field'], 'origin')
+        self.assertEqual(card['error'], COULD_NOT_UNDERSTAND)
+
+
+class DemoParseLineTests(unittest.TestCase):
+    """The terminal demo turns lines into answers the way the frontend's widgets would."""
+
+    def test_picker_lines_become_values(self):
+        self.assertEqual(parse_line(QUESTIONS['trip_type'], 'Round'), {'value': 'round_trip'})
+        self.assertEqual(parse_line(QUESTIONS['mode'], 'fly'), {'value': 'fly'})
+        self.assertEqual(parse_line(QUESTIONS['budget'], '$1,200'), {'value': 1200})
+        self.assertEqual(parse_line(QUESTIONS['max_connections'], '0'), {'value': 0})
+        self.assertEqual(parse_line(QUESTIONS['depart_date'], '2099-03-01 to 2099-03-05'),
+                         {'value': {'start': '2099-03-01', 'end': '2099-03-05'}})
+
+    def test_lines_that_dont_fit_a_picker_are_asked_again(self):
+        self.assertIsNone(parse_line(QUESTIONS['return_date'], 'dec 15'))
+        self.assertIsNone(parse_line(QUESTIONS['travelers'], 'me and 3 friends'))
+        self.assertIsNone(parse_line(QUESTIONS['mode'], 'train'))
+
+    def test_text_cards_and_allow_text_send_text(self):
+        self.assertEqual(parse_line(QUESTIONS['origin'], "O'Hare"), {'text': "O'Hare"})
+        self.assertEqual(parse_line(QUESTIONS['depart_date'], 'sometime in march'),
+                         {'text': 'sometime in march'})
+
+
+class ClaudeCallTests(unittest.TestCase):
+    """llm.generate with the Anthropic client faked; never calls the real API."""
+
+    def setUp(self):
+        for name, value in {'ANTHROPIC_API_KEY': 'test-key'}.items():
+            patcher = patch.object(llm.settings, name, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        patcher = patch('services.agent.llm.Anthropic')
+        self.client_class = patcher.start()
+        self.addCleanup(patcher.stop)
+        self.create = self.client_class.return_value.messages.create
+
+    def reply(self, *blocks, stop_reason='end_turn'):
+        self.create.return_value = SimpleNamespace(content=list(blocks), stop_reason=stop_reason)
+
+    def test_returns_text_and_sends_prompt(self):
+        self.reply(SimpleNamespace(type='thinking', thinking=''),
+                   SimpleNamespace(type='text', text=' {"origin": "Chicago"} '))
+        self.assertEqual(llm.generate('claude-haiku-5-5', EXTRACT_PROMPT, 'context'), '{"origin": "Chicago"}')
+        self.assertEqual(self.client_class.call_args.kwargs['api_key'], 'test-key')
+        sent = self.create.call_args.kwargs
+        self.assertEqual(sent['model'], 'claude-haiku-5-5')
+        self.assertIs(sent['system'], EXTRACT_PROMPT)
+        self.assertEqual(sent['messages'], [{'role': 'user', 'content': 'context'}])
+        self.assertEqual(sent['output_config'], {'effort': 'low'})
+
+    def test_missing_key_fails_before_calling(self):
+        with patch.object(llm.settings, 'ANTHROPIC_API_KEY', None):
+            with self.assertRaisesRegex(RuntimeError, 'ANTHROPIC_API_KEY'):
+                llm.generate('m', 'i', 'c')
+        self.create.assert_not_called()
+
+    def test_cut_off_declined_or_empty_reply_raises(self):
+        for stop_reason, blocks in (('max_tokens', [SimpleNamespace(type='text', text='{"ori')]),
+                                    ('refusal', []), ('end_turn', [])):
+            with self.subTest(stop_reason=stop_reason):
+                self.reply(*blocks, stop_reason=stop_reason)
+                with self.assertRaises(RuntimeError):
+                    llm.generate('m', 'i', 'c')
+
+    def test_api_errors_become_short_messages_without_the_key(self):
+        request = httpx.Request('POST', 'https://api.anthropic.com/v1/messages')
+        response = httpx.Response(401, request=request)
+        self.create.side_effect = anthropic.AuthenticationError('bad key', response=response, body=None)
+        with self.assertRaises(RuntimeError) as caught:
+            llm.generate('m', 'i', 'c')
+        self.assertIn('rejected', str(caught.exception))
+        self.assertNotIn('test-key', str(caught.exception))
 
 if __name__ == '__main__':
     unittest.main()

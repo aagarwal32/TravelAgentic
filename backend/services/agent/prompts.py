@@ -74,9 +74,20 @@ Return ONLY a JSON object with the fields the answers state (a "patch").
 - No markdown, no code fences, no comments, no keys that are not in the schema.
 
 # Fields
-- origin, destination: the city ("Chicago", "New York"). If the user names an
-  airport, use its city ("O'Hare" -> "Chicago"). Never output airport codes. If they
-  name only a state or region ("Florida"), leave it out.
+- origin, destination: the city ("Chicago", "New York"). If the user gives the state,
+  keep it as its two-letter code after a comma ("Greenville, South Carolina" ->
+  "Greenville, SC"). If they don't, output the city name alone, even when several
+  places share it ("Greenville" -> "Greenville"): the code asks which one they mean.
+  Never add a state the user didn't give, and never leave a named city out because
+  it is ambiguous. If the user names an airport, use its city ("O'Hare" ->
+  "Chicago"). Never output airport codes. If they name only a state or region
+  ("Florida"), leave it out.
+- origin_place, destination_place: never output these. The code looks up the exact
+  place from origin and destination. When "field" is origin_place or
+  destination_place, the user is saying which city they meant (the question names
+  it): output the city, with its state, as origin or destination. Preserve a
+  parenthetical place qualifier from a choice label when the user gives one
+  ("Greenville (CDP; Greene County), NY").
 - mode: "fly" or "drive", only when the user says it. Flight-only words (flights,
   nonstop, layovers, airline) count as "fly". "drive" means the user drives their
   own car ("road trip", "I'll drive"). Do not infer it from distance. Rental cars
@@ -141,6 +152,13 @@ and my roommate, Dec 18 to Dec 22, $250 each, no layovers"}]
 answers: [{"field": "origin", "question": "Where are you leaving from?",
 "text": "flying out of O'Hare"}]
 {"origin": "Chicago", "mode": "fly"}
+
+answers: [{"field": null, "question": null, "text": "Chicago to Greenville in march"}]
+{"origin": "Chicago", "destination": "Greenville", "flexible_start": "2027-03-01", "flexible_end": "2027-03-31"}
+
+answers: [{"field": "destination_place", "question": "Which Greenville do you mean?",
+"text": "the one in Texas"}]
+{"destination": "Greenville, TX"}
 
 answers: [{"field": "depart_date", "question": "When do you want to leave?",
 "text": "sometime in march"}]

@@ -9,11 +9,14 @@ from datetime import date, datetime, timezone
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from math import asin, cos, isfinite, radians, sin, sqrt
 import re
-from typing import Optional
+from typing import TYPE_CHECKING, Optional, Union
 from urllib.parse import quote
 
 from core.config import settings
 from services.liteapi_client import LiteAPIError, _request
+
+if TYPE_CHECKING:
+    from services.agent.state import Place
 
 
 def _positive_int(value: int, name: str, maximum: Optional[int] = None) -> int:
@@ -370,23 +373,33 @@ def get_review_summary(hotel_id: str, limit: int = 20) -> dict:
 
 
 def search_hotels_with_prices(
-    city: str, checkin: date, checkout: date, adults: int, rooms: int = 1,
+    city: Union[str, "Place", dict], checkin: date, checkout: date, adults: int, rooms: int = 1,
     radius_m: int = 5000, max_total: Optional[float] = None,
 ) -> list[dict]:
     """Return priced US hotel candidates within radius_m, sorted by total USD.
 
+    city is the trip's resolved place (TripConstraints.destination_place, as a Place or
+    the dict saved in the graph state): its coordinates are searched directly, so the hotels are around the same city that
+    fare trends and flights use, with no extra LiteAPI calls. A city name still
+    works for testing by hand; it is looked up with get_city_location (1-6 calls).
     max_total applies to the entire stay and every room, not per person/night.
-    Uses city lookup -> hotel list -> minimum rates; no booking or agent wiring.
+    Uses hotel list -> minimum rates; no booking or agent wiring.
     """
     _stay_payload(checkin, checkout, adults, rooms)
     _positive_int(radius_m, "radius_m")
     budget = _money(max_total) if max_total is not None else None
     if max_total is not None and budget is None:
         raise ValueError("max_total must be a finite nonnegative USD amount")
-    location = get_city_location(city)
-    if location is None:
-        return []
-    hotels = search_hotels_near(location["latitude"], location["longitude"], radius_m=radius_m)
+    if isinstance(city, str):
+        location = get_city_location(city)
+        if location is None:
+            return []
+        latitude, longitude = location["latitude"], location["longitude"]
+    elif isinstance(city, dict):  # a place as saved in the graph state
+        latitude, longitude = city.get("latitude"), city.get("longitude")
+    else:  # a Place; search_hotels_near rejects anything without valid coordinates
+        latitude, longitude = getattr(city, "latitude", None), getattr(city, "longitude", None)
+    hotels = search_hotels_near(latitude, longitude, radius_m=radius_m)
     if not hotels:
         return []
     by_id = {hotel["hotel_id"]: hotel for hotel in hotels}

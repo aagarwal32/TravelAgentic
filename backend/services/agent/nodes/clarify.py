@@ -7,6 +7,10 @@ from services.agent.state import TRIP_NIGHTS_MAX, TRIP_NIGHTS_MIN, TripConstrain
 QUESTIONS = {
     "origin":            {"text": "Where are you leaving from?", "input": "text"},
     "destination":       {"text": "Where do you want to go?", "input": "text"},
+    # Asked right after their city when it fits several US places; build_card fills in the
+    # city and the options from state["place_choices"]. Typing another city is allowed.
+    "origin_place":      {"text": "Which {city} do you mean?", "input": "choice", "allow_text": True, "options": []},
+    "destination_place": {"text": "Which {city} do you mean?", "input": "choice", "allow_text": True, "options": []},
     "mode":              {"text": "Do you want to fly or drive?", "input": "choice", "options": [{"value": "fly", "label": "Fly"}, {"value": "drive", "label": "Drive"}]},
     "trip_type":         {"text": "One-way or round trip?", "input": "choice", "options": [{"value": "one_way", "label": "One-way"}, {"value": "round_trip", "label": "Round trip"}]},
     "depart_date":       {"text": "When do you want to leave?", "input": "date_or_range", "allow_text": True},
@@ -26,6 +30,8 @@ QUESTIONS = {
 ERROR_TEXT = {
     "origin":      "Enter the city you're leaving from.",
     "destination": "Enter the city you want to go to.",
+    "origin_place":      "Choose one of these places, or type the city with its state.",
+    "destination_place": "Choose one of these places, or type the city with its state.",
     "mode":        "Choose Fly or Drive.",
     "trip_type":   "Choose One-way or Round trip.",
     "depart_date": "Pick a date or range from today on, with the end after the start.",
@@ -37,6 +43,9 @@ ERROR_TEXT = {
 
 # Shown when a typed answer couldn't be used
 COULD_NOT_UNDERSTAND = "Sorry, I couldn't understand that. Please try again."
+
+# Shown on the city card again when a typed city isn't a US place we know
+PLACE_NOT_FOUND = "We couldn't find that city in the US. Try adding the state, like \"Greenville, SC\"."
 
 
 DATE_FIELDS = ["depart_date", "return_date", "flexible_start", "flexible_end"]
@@ -86,12 +95,17 @@ def merge_answers(current: TripConstraints, answers: dict) -> TripConstraints:
             for field in to_drop:
                 answers.pop(field)
 
-def build_card(field: str, c: TripConstraints) -> dict:
+def build_card(field: str, c: TripConstraints, place_choices: dict | None = None) -> dict:
     card = {"field": field, **QUESTIONS[field]}
 
+    if field in ("origin_place", "destination_place"):
+        # Built from what extract saved: no database lookup before interrupt()
+        options = list((place_choices or {}).get(field, []))
+        city = options[0]["label"].split(" (")[0].split(",")[0] if options else "city"
+        card.update(text=card["text"].format(city=city), options=options)
     # The return card is only asked after an exact departure date (a departure window
     # asks for trip_nights instead), so its earliest pick is that date
-    if field == "return_date" and c.depart_date is not None:
+    elif field == "return_date" and c.depart_date is not None:
         card["min"] = c.depart_date.isoformat()
 
     return card
@@ -102,13 +116,24 @@ def to_pending(card: dict, answer) -> dict:
     if not isinstance(answer, dict) or ("value" in answer) + ("text" in answer) != 1:
         raise ValueError('Resume with {"value": ...} or {"text": ...}.')
     kind = "value" if "value" in answer else "text"
+    # Enforce the card's input type here, not only in the frontend: picker cards never
+    # cost an AI call, and text cards always get the AI's cleanup ("O'Hare" -> "Chicago")
+    if kind == "text" and card["input"] != "text" and not card.get("allow_text"):
+        raise ValueError(f'{card["field"]} takes a picked value: resume with {{"value": ...}}.')
+    if kind == "value" and card["input"] == "text":
+        raise ValueError(f'{card["field"]} takes typed text: resume with {{"text": ...}}.')
     return {"field": card["field"], "question": card["text"], kind: answer[kind]}
 
 def clarify(state: TripState) -> dict:
     """Pause with a card for the first missing field; pass the answer to extract."""
     # Resuming re-runs this node, so everything before interrupt() only reads state
     c = TripConstraints(**state["constraints"])
-    card = build_card(state["missing"][0], c)
+    card = build_card(state["missing"][0], c, state.get("place_choices"))
     answer = interrupt({"type": "required_question", "card": card,
                         "error": state.get("field_error")})
-    return {"pending_answers": [to_pending(card, answer)]}
+    try:
+        pending = to_pending(card, answer)
+    except ValueError:
+        # Raising here would leave the chat stuck; extract shows the card again with its error
+        pending = {"field": card["field"], "question": card["text"], "rejected": True}
+    return {"pending_answers": [pending]}
