@@ -650,6 +650,25 @@ class TripLoopTests(unittest.TestCase):
         self.assertEqual((place['id'], place['airports'], place['dot_market_id']), ('us-mt-jordan', [], None))
         self.assertIsNone(self.answer({'answers': {}}))  # intake still finishes
 
+    # Planning nodes after intake (stubs for now; see the contracts in state.py)
+
+    def test_flying_trip_runs_all_planning_nodes(self):
+        self.start(COMPLETE)
+        self.assertIsNone(self.answer({'answers': {}}))
+        values = self.graph.get_state(self.config).values
+        for key in ('flight_trends', 'flight_offers', 'hotel_options'):
+            self.assertEqual(values[key]['status'], 'empty', key)
+        self.assertEqual(values['hotel_options']['checkin'], COMPLETE['depart_date'])
+        self.assertEqual(values['messages'][-1].content, 'Your trip details are ready for planning.')
+
+    def test_driving_trip_skips_the_flight_nodes(self):
+        self.start({**COMPLETE, 'mode': 'drive'})
+        self.assertIsNone(self.answer({'answers': {}}))
+        values = self.graph.get_state(self.config).values
+        self.assertNotIn('flight_trends', values)
+        self.assertNotIn('flight_offers', values)
+        self.assertEqual(values['hotel_options']['status'], 'empty')
+
     def test_empty_location_tables_are_reported(self):
         empty = location_engine(filled=False)
         self.addCleanup(empty.dispose)

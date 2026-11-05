@@ -11,7 +11,14 @@ from langgraph.types import Command, interrupt
 from services.agent.state import OPTIONAL, TripConstraints, TripState
 from services.agent.nodes.extract import extract
 from services.agent.nodes.clarify import build_card, clarify, to_pending
+from services.agent.nodes.flight_search import flight_search
+from services.agent.nodes.flight_trends import flight_trends
+from services.agent.nodes.hotel_search import hotel_search
 from services.location_service import LocationDataMissing
+
+# Planning nodes after intake, in order, with the TripState key each one writes
+PLANNING_RESULTS = {"flight_trends": "flight_trends", "flight_search": "flight_offers",
+                    "hotel_search": "hotel_options"}
 
 
 def ask_optional(state: TripState) -> dict:
@@ -44,11 +51,15 @@ def route_after_extract(state: TripState) -> str:
         return "clarify"
     if not state.get("optional_asked"):
         return "ask_optional"
-    return "planning"
+    # Intake is done: flying trips start with fare trends; driving trips skip both
+    # flight nodes and go straight to hotels
+    if state["constraints"].get("mode") == "fly":
+        return "flight_trends"
+    return "hotel_search"
 
 
 def next_step(state: TripState) -> dict:
-    # Replace this node with the trends agent when its implementation lands.
+    # Replace this node with the evaluator when its implementation lands.
     return {"messages": [AIMessage(content="Your trip details are ready for planning.")]}
 
 
@@ -57,12 +68,18 @@ def build_graph(checkpointer=None):
     builder.add_node("extract", extract)
     builder.add_node("clarify", clarify)
     builder.add_node("ask_optional", ask_optional)
+    builder.add_node("flight_trends", flight_trends)
+    builder.add_node("flight_search", flight_search)
+    builder.add_node("hotel_search", hotel_search)
     builder.add_node("planning", next_step)
     builder.add_edge(START, "extract")
     builder.add_conditional_edges("extract", route_after_extract,
-                                  ["clarify", "ask_optional", "planning"])
+                                  ["clarify", "ask_optional", "flight_trends", "hotel_search"])
     builder.add_edge("clarify", "extract")
     builder.add_edge("ask_optional", "extract")
+    builder.add_edge("flight_trends", "flight_search")
+    builder.add_edge("flight_search", "hotel_search")
+    builder.add_edge("hotel_search", "planning")
     builder.add_edge("planning", END)
     return builder.compile(checkpointer=checkpointer or InMemorySaver())
 
@@ -182,6 +199,14 @@ def main():
             result = graph.invoke(Command(resume=resume), config)
         print("\n" + result["messages"][-1].content)
         print(json.dumps(result["constraints"], indent=2))
+        print("\nPlanning:")
+        for node, key in PLANNING_RESULTS.items():
+            if key not in result:  # e.g. the flight nodes on a driving trip
+                print(f"  {node}: not run")
+                continue
+            details = {k: v for k, v in result[key].items() if k not in ("status", "reason")}
+            reason = f" ({result[key]['reason']})" if result[key].get("reason") else ""
+            print(f"  {node}: {result[key]['status']}{reason}" + (f" {json.dumps(details)}" if details else ""))
     except (EOFError, KeyboardInterrupt):
         print("\nIntake ended.")
     except LocationDataMissing as error:  # cities are looked up in our own tables
