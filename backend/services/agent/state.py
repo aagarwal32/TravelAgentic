@@ -126,6 +126,177 @@ def compute_missing(c: TripConstraints) -> list[str]:
             missing.append("trip_nights")
     return missing
 
+# --- Planning node results ---------------------------------------------------------
+#
+# After intake, three nodes each write ONE key of TripState and never change
+# constraints or another node's key:
+#     flight_trends (fly only) -> flight_trends: FlightTrends
+#     flight_search (fly only) -> flight_offers: FlightOffers
+#     hotel_search             -> hotel_options: HotelOptions
+#
+# Shared rules:
+# - Every result has "status": "ok", "skipped" (the node doesn't apply to this trip)
+#   or "empty" (it ran and found nothing), and a "reason" when it isn't "ok". The
+#   other keys are always present when "ok"; they may be missing otherwise.
+# - A node must still work when the node before it has no result (missing,
+#   "skipped" or "empty"):
+#     flights without trends: search the places' own airports on the trip's dates
+#     hotels without flights: the full budget, and dates from the trip itself
+# - Prices come only from data (DOT Table 6, Duffel, LiteAPI), never from the AI.
+#   Live results carry "fetched_at" (UTC, ISO 8601).
+# - Dates are ISO strings ("2027-03-10") and money is USD rounded to cents, so state
+#   stays JSON-friendly like constraints.
+# - A departure window becomes concrete dates once, in flight_trends: up to 3
+#   departure dates inside the window (in its cheapest quarter, spread out), each
+#   with return_date = depart_date + trip_nights. An exact date has one candidate,
+#   (depart_date, return_date). One-way trips have return_date None.
+
+ResultStatus = Literal["ok", "skipped", "empty"]
+
+
+def empty_result(status: ResultStatus, reason: str) -> dict:
+    """A node result with nothing found yet: {"status": ..., "reason": ...}."""
+    return {"status": status, "reason": reason}
+
+
+def flight_skip_reason(c: "TripConstraints") -> Optional[str]:
+    """Why the flight nodes don't apply to this trip, or None if they do."""
+    if c.mode != "fly":
+        return "not a flying trip"
+    if c.origin_place is None or c.destination_place is None:
+        return "origin or destination not resolved to a place"
+    return None
+
+
+class RouteTrend(TypedDict):
+    route: str                       # "Champaign/Urbana, IL → New York City, NY"
+    avg_fare: Optional[float]        # average each-way fare over all years; None without data
+    has_data: bool
+
+
+class RouteOption(TypedDict):
+    route: str
+    side: Literal["departure", "arrival"]   # which end of the trip uses the other airport
+    airports: list[str]              # the alternative market's airports: ["MDW", "ORD"]
+    distance_km: float               # from the place's center to the closest of them
+    avg_fare: Optional[float]
+    savings_each_way: Optional[float]   # vs the home route; None if either has no data
+    suggested: bool                  # cheap enough to suggest (and to chart)
+
+
+class ChartSeries(TypedDict):
+    label: str                       # "From Chicago (ORD/MDW)"
+    values: list[Optional[float]]    # Q1..Q4 averages over all years; None = no data
+    home: bool                       # the route the user asked for
+
+
+class FareChart(TypedDict):
+    x: list[str]                     # ["Q1 (Jan-Mar)", "Q2 (Apr-Jun)", "Q3 (Jul-Sep)", "Q4 (Oct-Dec)"]
+    series: list[ChartSeries]
+    years: str                       # "2022–2026"
+    note: str                        # what the numbers are and their source
+
+
+class SearchAirports(TypedDict):
+    origin: list[str]                # home airports first, then suggested alternatives
+    destination: list[str]
+
+
+class CandidateDates(TypedDict):
+    depart_date: str
+    return_date: Optional[str]       # None for one-way
+
+
+class BudgetCheck(TypedDict):
+    typical_trip_total: Optional[float]   # typical round-trip fares x travelers, from Table 6
+    fits: Optional[bool]                  # None when there is no fare history
+
+
+class FlightTrends(TypedDict):
+    status: ResultStatus
+    reason: NotRequired[str]
+    home: NotRequired[RouteTrend]                 # always the route the user asked for
+    options: NotRequired[list[RouteOption]]
+    chart: NotRequired[FareChart]
+    search_airports: NotRequired[SearchAirports]  # what flight_search should search
+    candidate_dates: NotRequired[list[CandidateDates]]
+    budget_check: NotRequired[BudgetCheck]
+
+
+class FlightSlice(TypedDict):
+    origin: str                      # airport codes: "ORD"
+    destination: str
+    depart_at: str                   # local time, ISO 8601
+    arrive_at: str
+    duration_min: int
+    stops: int
+    carriers: list[str]              # airline names or codes, in flight order
+
+
+class FlightMetrics(TypedDict):
+    # Measured in code from the offer's segments, so the evaluator never does time math
+    longest_layover_min: Optional[int]       # None for nonstop
+    shortest_connection_min: Optional[int]   # under ~45 min domestic is risky
+    overnight_layover: bool
+    airport_change: bool                     # e.g. land at LGA, leave from JFK
+    red_eye: bool                            # departs late night or arrives before ~6 am
+    carry_on_included: Optional[bool]        # None when the fare rules don't say
+
+
+class FlightOffer(TypedDict):
+    offer_id: str                    # Duffel's id; the evaluator picks by id only
+    total_amount: float              # all passengers
+    per_person: float
+    currency: str
+    expires_at: str                  # Duffel offers expire (~30 min); never show after this
+    from_alternative_airport: bool
+    tags: list[str]                  # why it's shortlisted: "cheapest", "fastest", "best_balance", "alternative_airport"
+    outbound: FlightSlice
+    inbound: Optional[FlightSlice]   # None for one-way
+    metrics: FlightMetrics
+
+
+class FlightOffers(TypedDict):
+    status: ResultStatus
+    reason: NotRequired[str]
+    searches_made: NotRequired[int]          # Duffel searches this node made
+    fetched_at: NotRequired[str]
+    cheapest_total: NotRequired[Optional[float]]   # hotel_search subtracts it from the budget
+    shortlist: NotRequired[list[FlightOffer]]      # about 5, chosen in code
+
+
+class HotelPick(TypedDict):
+    # Why it was picked: "cheapest" (1), "better_value" (1: a bit pricier, better rated),
+    # "upscale" (up to 3: nicer hotels still within hotel_budget)
+    role: Literal["cheapest", "better_value", "upscale"]
+    hotel_id: str
+    name: Optional[str]
+    total_price: float               # whole stay, all rooms
+    per_night: float
+    rating: Optional[float]          # guest rating, 0-10
+    distance_km: float               # from the destination's center
+    matched_amenities: NotRequired[list[str]]
+    missing_amenities: NotRequired[list[str]]
+
+
+class HotelOptions(TypedDict):
+    status: ResultStatus
+    reason: NotRequired[str]
+    fetched_at: NotRequired[str]
+    sandbox: NotRequired[bool]               # LiteAPI sandbox prices: real, but not bookable
+    checkin: NotRequired[str]
+    checkout: NotRequired[str]
+    rooms: NotRequired[int]
+    hotel_budget: NotRequired[float]         # trip budget minus the cheapest flight, if any
+    over_budget: NotRequired[bool]           # even the cheapest hotel doesn't fit
+    picks: NotRequired[list[HotelPick]]      # up to 5, cheapest first, all within hotel_budget
+    radius_m: NotRequired[int]
+    unknown_amenities: NotRequired[list[str]]
+    unmet_hard: NotRequired[list[str]]
+    rating_floor_applied: NotRequired[bool]  # hotels rated below the floor were left out
+    preferences_used: NotRequired[bool]      # an AI call matched hotel_preferences to the picks
+
+
 class TripState(TypedDict):
     model: NotRequired[str]
     pending_answers: NotRequired[list[dict]]   # answers waiting for extract
@@ -139,7 +310,8 @@ class TripState(TypedDict):
     constraints: dict                       
     missing: list[str]
     skipped: list[str]
-    trends: NotRequired[dict]
-    offers: NotRequired[dict]
-    hotel_matches: NotRequired[list]
+    # Planning node results (see the shared rules above)
+    flight_trends: NotRequired[FlightTrends]
+    flight_offers: NotRequired[FlightOffers]
+    hotel_options: NotRequired[HotelOptions]
     evaluation: NotRequired[dict]

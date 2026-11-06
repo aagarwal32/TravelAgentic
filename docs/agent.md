@@ -13,7 +13,7 @@ cards the user can skip.
 first request ─► extract ─┬─ required detail missing → clarify      (pause: 1 card) ─┐
                     ▲     ├─ optionals not shown yet → ask_optional (pause: stack) ──┤
                     └─────┼───────────────────────────────────────────────────────────┘
-                          └─ done → planning (placeholder for now)
+                          └─ done → planning nodes (see "Planning nodes" below)
 ```
 
 - **`extract`** (`nodes/extract.py`) is the only step that saves answers, and the
@@ -108,8 +108,9 @@ Type a trip request, then answer each card. For buttons, type the option ("fly",
 cards, press Enter to skip. Like the real frontend, picker cards only take a value
 that fits them (`round` and `$500` work; `dec 15` on the return-date card is asked
 again), and only text cards and the departure card send typed text to the AI. When every required detail is known, the demo prints the
-saved trip details. It does not search or book anything. Each typed answer costs one
-AI call; picker answers cost none.
+saved trip details, then one line per planning node with its status (the nodes are
+stubs for now, so nothing is searched or booked). Each typed answer costs one AI
+call; picker answers cost none.
 
 ## Graph image
 
@@ -149,8 +150,8 @@ no AI and no API calls, and saves the result next to the text the user typed:
 ```
 
 Hotel search accepts this saved place, and fare-trend functions accept its market ID.
-These are service-level interfaces: the intake graph still ends at a planning
-placeholder and does not call either service. Flight integration is also future work.
+The planning nodes (see "Planning nodes") will call them; for now those nodes are
+stubs and call no service.
 
 - `airports`: airports with scheduled flights within 120 km, closest first (for the
   flight search). A driving trip keeps the place but doesn't use them.
@@ -218,3 +219,54 @@ county-name interpretation is not implemented.
 
 The terminal demo reads the location tables from the database in `DATABASE_URL`, so
 load them first; if they are missing or empty it stops with the command that loads them.
+
+## Planning nodes
+
+After intake, three nodes gather prices. Each one writes **one** key of `TripState`
+and never changes `constraints` or another node's key:
+
+```
+intake done ─┬─ fly ──► flight_trends ─► flight_search ─┐
+             └─ drive ──────────────────────────────────┴─► hotel_search ─► planning (evaluator later)
+```
+
+| Node (file in `nodes/`) | Writes | Contract in `state.py` | Data | Tests |
+|---|---|---|---|---|
+| `flight_trends.py` | `flight_trends` | `FlightTrends` | DOT Table 6 (our DB) | `tests/test_flight_trends.py` |
+| `flight_search.py` | `flight_offers` | `FlightOffers` | Duffel | `tests/test_flight_search.py` |
+| `hotel_search.py` | `hotel_options` | `HotelOptions` | LiteAPI | `tests/test_hotel_search.py` |
+
+All three are **stubs** for now: they return a valid, empty result, so each one can be
+built on its own branch. Replace a stub's body, keep its contract, and add tests to
+its own test file. `tests/planning_fixtures.py` has sample trips and
+`assert_contract`, which fails if a result has a key its contract doesn't list.
+
+**Shared rules** (the comment block above the contracts in `state.py`):
+
+- **Status:** every result has `status`: `"ok"`, `"skipped"` (the node doesn't apply,
+  e.g. flights on a driving trip) or `"empty"` (it ran and found nothing), plus a
+  `reason` when it isn't `"ok"`. An `"ok"` result has every key of its contract.
+- **Fallbacks:** each node works without the result before it.
+  - Flights without trends: the places' own airports, on the trip's dates.
+  - Hotels without flights: the full budget, and dates from the trip.
+- **Data only:** prices come from Table 6, Duffel or LiteAPI, never from the AI. Live
+  results have `fetched_at`. Dates are ISO strings and money is USD.
+- **Window → dates:** `flight_trends` turns a departure window into up to 3 concrete
+  departure dates (`candidate_dates`), each returning `trip_nights` later. Flights and
+  hotels use those dates.
+
+**What each node reads:**
+
+- **`flight_trends`**: the places' DOT markets and coordinates, the dates, budget and
+  travelers. It tells flights where and when to search (`search_airports`,
+  `candidate_dates`).
+- **`flight_search`**: `search_airports` and `candidate_dates` (fallback: the places'
+  airports and the trip's dates), travelers and `max_connections`. All Duffel calls
+  go through one guarded client limited by `DUFFEL_DAILY_SEARCH_LIMIT`. It writes a
+  shortlist of about 5 offers chosen in code, each with measured `metrics`, and
+  `cheapest_total`.
+- **`hotel_search`**: the stay dates (from the cheapest shortlisted flight, else trends'
+  first candidate dates, else the trip's own dates), rooms (one per 2 travelers) and
+  the hotel budget (budget minus `cheapest_total`). With no stay length (no
+  `trip_nights` and no return date, e.g. a one-way trip), it is `"skipped"`. These
+  inputs already work in the stub.
