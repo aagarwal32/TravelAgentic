@@ -41,6 +41,20 @@ class HotelSearchTests(unittest.TestCase):
     def test_window_uses_its_start_plus_nights(self):
         self.assertEqual(self.stay(self.run_node(WINDOW_TRIP)), ("2099-03-01", "2099-03-03"))
 
+    def test_window_with_fixed_return_and_no_nights_keeps_checkout(self):
+        trip = {**WINDOW_TRIP, "trip_nights": None, "return_date": "2099-03-15"}
+        self.assertEqual(self.stay(self.run_node(trip)), ("2099-03-01", "2099-03-15"))
+
+    def test_window_with_return_and_nights_uses_the_implied_departure(self):
+        # With no concrete flights or trends, both user constraints still apply:
+        # a 2-night stay returning March 15 starts March 13, not the window's start.
+        for back, expected_departure in (("2099-03-03", "2099-03-01"),
+                                         ("2099-03-15", "2099-03-13"),
+                                         ("2099-04-02", "2099-03-31")):
+            with self.subTest(return_date=back):
+                trip = {**WINDOW_TRIP, "return_date": back}
+                self.assertEqual(self.stay(self.run_node(trip)), (expected_departure, back))
+
     def test_rooms_are_one_per_two_travelers(self):
         for travelers, rooms in ((1, 1), (2, 1), (3, 2), (4, 2), (9, 5)):
             with self.subTest(travelers=travelers):

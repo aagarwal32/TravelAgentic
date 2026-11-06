@@ -97,6 +97,9 @@ Return ONLY a JSON object with the fields the answers state (a "patch").
 - trip_type: "one_way" or "round_trip". "there and back" or a return date means
   "round_trip". A single date does not decide it.
 - depart_date: the exact departure date. return_date: the exact return date.
+  For this app, "return by December 15" and "return on December 15" both mean
+  return_date on December 15. Preserve a stated return date even when departure
+  is a flexible window. Do not invent an exact departure date from it.
 - trip_nights: how many nights the user wants to stay, when they say it: "stay 2
   nights" -> 2, "for a week" -> 7, "a weekend" -> 2, "2-3 nights" -> 3 (the higher
   number, like budgets). Leave it out if they say one-way. On its own it does not
@@ -105,8 +108,10 @@ Return ONLY a JSON object with the fields the answers state (a "patch").
   alone and do not repeat the old return_date. Never turn nights into a return date
   or a return date into nights: the code does that date math.
 - flexible_start, flexible_end: a departure window when there is no exact date. It
-  means the user can leave on any day in it, so it goes with trip_nights, not with a
-  return date. Always set both.
+  describes possible departure dates, not the whole stay. Always set both. A window
+  can go with a stated return_date, trip_nights, or both. Keep an explicit return
+  date even if it falls inside the departure window; leave date feasibility and
+  any departure calculation to code.
     "sometime in March"   -> first and last day of March
     "next month"          -> first and last day of next month
     "this summer"         -> June 1 to August 31
@@ -130,7 +135,8 @@ Return ONLY a JSON object with the fields the answers state (a "patch").
   year is the next time it comes after today.
 - "for 4 nights" -> trip_nights: 4, whether the departure is an exact date or a
   window. Never add nights to a date yourself: the code works out return_date from
-  depart_date and trip_nights. With a departure window, leave return_date out.
+  depart_date and trip_nights. Leave return_date out only when the answers do not
+  state one; a departure window is not a reason to discard a stated return date.
 - If you cannot tell which date is meant, leave it out.
 - Copy dates as stated, even if they look wrong. The code checks them.
 
@@ -166,6 +172,12 @@ answers: [{"field": "depart_date", "question": "When do you want to leave?",
 
 answers: [{"field": null, "question": null, "text": "Chicago to Tampa in december, stay 2 nights"}]
 {"origin": "Chicago", "destination": "Tampa", "flexible_start": "2026-12-01", "flexible_end": "2026-12-31", "trip_nights": 2}
+
+answers: [{"field": null, "question": null, "text": "Round trip Chicago to Tampa sometime in December, return by December 15"}]
+{"origin": "Chicago", "destination": "Tampa", "trip_type": "round_trip", "flexible_start": "2026-12-01", "flexible_end": "2026-12-31", "return_date": "2026-12-15"}
+
+answers: [{"field": null, "question": null, "text": "Round trip Chicago to Tampa sometime in December, stay 2 nights and return by December 15"}]
+{"origin": "Chicago", "destination": "Tampa", "trip_type": "round_trip", "flexible_start": "2026-12-01", "flexible_end": "2026-12-31", "return_date": "2026-12-15", "trip_nights": 2}
 
 answers: [{"field": null, "question": null, "text": "Chicago to Tampa Dec 18, 4 nights"}]
 {"origin": "Chicago", "destination": "Tampa", "depart_date": "2026-12-18", "trip_nights": 4}

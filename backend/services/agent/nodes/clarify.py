@@ -15,9 +15,8 @@ QUESTIONS = {
     "trip_type":         {"text": "One-way or round trip?", "input": "choice", "options": [{"value": "one_way", "label": "One-way"}, {"value": "round_trip", "label": "Round trip"}]},
     "depart_date":       {"text": "When do you want to leave?", "input": "date_or_range", "allow_text": True},
     "return_date":       {"text": "When do you want to come back?", "input": "date"},
-    # Asked instead of a return date when the departure is a window ("any day in
-    # December"): the trip's length is what fits a flexible departure. A number box,
-    # so the answer is saved without an AI call.
+    # A picked stay length is saved without an AI call. Intake prefers the return
+    # date question when neither a return date nor nights has been supplied.
     "trip_nights":       {"text": "How many nights do you want to stay?", "input": "number", "min": TRIP_NIGHTS_MIN, "max": TRIP_NIGHTS_MAX},
     "travelers":         {"text": "How many people are traveling?", "input": "number", "min": 1, "max": 9},
     "budget":            {"text": "What's your total budget for the whole trip (everyone), in USD?", "input": "number", "min": 1},
@@ -57,6 +56,8 @@ def bad_fields(e: ValidationError) -> set[str]:
     for err in e.errors():
         if not err["loc"]:
             bad.update(DATE_FIELDS)
+            # A model-level date error can also come from nights not fitting a window.
+            bad.add("trip_nights")
         else:
             bad.add(err["loc"][0])
     return bad
@@ -68,12 +69,13 @@ def stale_dates(current: TripConstraints, answers: dict) -> dict:
     TripConstraints.normalize_dates derives one from the other, and lets return_date
     win when both are set. Without this, a saved return date computed from "4 nights"
     would win over a new "actually 6 nights" instead of being derived again from it.
-    A return date only replaces the nights after an exact departure: with a window
-    (or when switching to one) the return date is dropped and the nights are kept.
+    Only an exact departure needs these resets. With a departure window, return_date
+    and trip_nights are separate user constraints: changing one must not erase the
+    other. Date validation checks whether they can fit together.
     """
-    if "trip_nights" in answers and "return_date" not in answers:
-        return {"return_date": None}
     exact = answers.get("depart_date", current.depart_date) is not None
+    if "trip_nights" in answers and "return_date" not in answers and exact:
+        return {"return_date": None}
     if "return_date" in answers and "trip_nights" not in answers and exact:
         return {"trip_nights": None}
     return {}
@@ -103,10 +105,12 @@ def build_card(field: str, c: TripConstraints, place_choices: dict | None = None
         options = list((place_choices or {}).get(field, []))
         city = options[0]["label"].split(" (")[0].split(",")[0] if options else "city"
         card.update(text=card["text"].format(city=city), options=options)
-    # The return card is only asked after an exact departure date (a departure window
-    # asks for trip_nights instead), so its earliest pick is that date
-    elif field == "return_date" and c.depart_date is not None:
-        card["min"] = c.depart_date.isoformat()
+    elif field == "return_date":
+        # A return can fall inside the departure window. Its minimum is the
+        # earliest possible departure, not the end of the window.
+        earliest_departure = c.depart_date or c.flexible_start
+        if earliest_departure is not None:
+            card["min"] = earliest_departure.isoformat()
 
     return card
 

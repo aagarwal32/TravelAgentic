@@ -36,14 +36,15 @@ class TripConstraints(BaseModel):
     depart_date: Optional[date] = None
     # A departure window: the user can leave on ANY day from flexible_start to
     # flexible_end ("sometime in March" -> Mar 1 to Mar 31). It only describes the
-    # departure, so a window goes with trip_nights, never with a fixed return_date.
+    # departure; a stated return_date can still fix when the trip ends.
     flexible_start: Optional[date] = None
     flexible_end: Optional[date] = None
     budget: Optional[float] = Field(None, gt=0)   
     travelers: Optional[int] = Field(None, ge=1, le=9)
     # Round trips: after an exact departure date normalize_dates derives one of these
     # from the other (nights only when the stay is 1 to 30, the range the nights card
-    # can express); after a departure window only trip_nights is set.
+    # can express). A departure window can retain a stated return_date, trip_nights,
+    # or both; no exact departure is inferred here.
     return_date: Optional[date] = None
     trip_nights: Optional[int] = Field(None, ge=TRIP_NIGHTS_MIN, le=TRIP_NIGHTS_MAX)
     max_connections: Optional[int] = Field(None, ge=0, le=2)
@@ -66,14 +67,10 @@ class TripConstraints(BaseModel):
 
         The date math lives here, in code: the AI only extracts what the user said
         ("4 nights" -> trip_nights: 4) and never computes a return date itself. This
-        runs on every validation, so a saved trip that still has a return date next
-        to a departure window is cleaned up when it is loaded.
+        runs on every validation, including when saved trip details are loaded.
+        A departure window does not erase an explicitly stated return date.
         """
         today = date.today()
-        if self.depart_date is None and self.flexible_start and self.flexible_end and self.return_date:
-            # A fixed return date does not fit "leave any day in the window". The stay
-            # length is trip_nights instead, so drop it (from the AI or an old saved state)
-            self.return_date = None
         if self.flexible_start and self.flexible_start < today:
             raise ValueError("flexible_start is in the past")
         if self.flexible_end and self.flexible_end < today:
@@ -95,6 +92,17 @@ class TripConstraints(BaseModel):
         elif self.depart_date and self.trip_nights:
             # Exact departure + nights: the return date is departure + nights
             self.return_date = self.depart_date + timedelta(days=self.trip_nights)
+        elif self.flexible_start and self.flexible_end and self.return_date:
+            # A fixed return may fall inside the departure window, but cannot be
+            # before every possible departure. Keep the user's original bounds.
+            if self.return_date < self.flexible_start:
+                raise ValueError("return_date before the start of the departure window")
+            if self.trip_nights is not None:
+                # Return minus nights implies one departure. Check that it fits
+                # the window without replacing the user's flexible date fields.
+                implied_departure = self.return_date - timedelta(days=self.trip_nights)
+                if not self.flexible_start <= implied_departure <= self.flexible_end:
+                    raise ValueError("return_date and trip_nights require a departure outside the window")
         return self
 
 REQUIRED = ["origin", "destination", "mode", "trip_type", "budget", "travelers"]
@@ -113,17 +121,10 @@ def compute_missing(c: TripConstraints) -> list[str]:
     has_dates = c.depart_date or (c.flexible_start and c.flexible_end)
     if not has_dates:
         missing.append("depart_date")
-    if c.trip_type == "round_trip":
-        # Asked right after the departure, as the return date was before
-        if c.depart_date:
-            # Exact departure: a return date OR a number of nights is enough, since
-            # normalize_dates fills in the other one
-            if c.return_date is None and c.trip_nights is None:
-                missing.append("return_date")
-        elif c.trip_nights is None:
-            # Departure window (or no departure yet): ask how long the trip is, never
-            # for a return date, because "leave any day in the window" has no fixed end
-            missing.append("trip_nights")
+    if c.trip_type == "round_trip" and c.return_date is None and c.trip_nights is None:
+        # Prefer the return-date question for both exact and flexible departures.
+        # A return date or nights already supplied by the user needs no follow-up.
+        missing.append("return_date")
     return missing
 
 # --- Planning node results ---------------------------------------------------------
@@ -146,10 +147,13 @@ def compute_missing(c: TripConstraints) -> list[str]:
 #   Live results carry "fetched_at" (UTC, ISO 8601).
 # - Dates are ISO strings ("2027-03-10") and money is USD rounded to cents, so state
 #   stays JSON-friendly like constraints.
-# - A departure window becomes concrete dates once, in flight_trends: up to 3
-#   departure dates inside the window (in its cheapest quarter, spread out), each
-#   with return_date = depart_date + trip_nights. An exact date has one candidate,
-#   (depart_date, return_date). One-way trips have return_date None.
+# - Candidate-date contract for the future flight_trends implementation (currently
+#   a stub): an exact departure has one candidate, (depart_date, return_date).
+#   A window with nights alone has up to 3 departures inside the window (in its
+#   cheapest quarter, spread out), returning depart_date + trip_nights. With a fixed
+#   return alone, candidates use that return and departures inside the window no
+#   later than it. With return and nights, only return_date - trip_nights fits.
+#   One-way trips have return_date None.
 
 ResultStatus = Literal["ok", "skipped", "empty"]
 
