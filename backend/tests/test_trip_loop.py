@@ -13,7 +13,8 @@ import anthropic
 import httpx
 from langgraph.types import Command
 from sqlalchemy.orm import sessionmaker
-from location_fixtures import DALLAS_FORT_WORTH_MARKET, GREENVILLE_SC_MARKET, ST_LOUIS_MARKET, location_engine
+from location_fixtures import (DALLAS_FORT_WORTH_MARKET, GREENVILLE_SC_MARKET, ST_LOUIS_MARKET,
+                               airport_rows, location_engine)
 from services.agent import llm
 from services.agent.graph import build_graph, parse_line, start_state
 from services.agent.nodes.clarify import (COULD_NOT_UNDERSTAND, ERROR_TEXT, PLACE_NOT_FOUND, QUESTIONS,
@@ -39,15 +40,23 @@ def date_missing(c: TripConstraints) -> list[str]:
 
 class TripLoopTests(unittest.TestCase):
     def setUp(self):
-        # Only the AI call in extract is mocked; each test queues the patches it returns
+        # AI replies and local data are fixtures; the graph nodes run normally.
         patcher = patch('services.agent.nodes.extract.generate')
         self.ai = patcher.start()
         self.addCleanup(patcher.stop)
         self.engine = location_engine()
         self.addCleanup(self.engine.dispose)
-        places = patch('services.agent.nodes.extract.SessionLocal', sessionmaker(bind=self.engine))
-        places.start()
-        self.addCleanup(places.stop)
+        sessions = sessionmaker(bind=self.engine)
+        for node in ('extract', 'flight_trends'):
+            database = patch(f'services.agent.nodes.{node}.SessionLocal', sessions)
+            database.start()
+            self.addCleanup(database.stop)
+        # Keep planning independent of local datasets as well as the application database.
+        markets = patch('services.agent.nodes.flight_trends.read_verified_airport_markets',
+                        return_value={a.iata: a.dot_market_id for a in airport_rows()
+                                      if a.dot_market_id is not None})
+        markets.start()
+        self.addCleanup(markets.stop)
         self.graph = build_graph()
         self.config = {'configurable': {'thread_id': self.id()}}
 
@@ -650,11 +659,13 @@ class TripLoopTests(unittest.TestCase):
         self.assertEqual((place['id'], place['airports'], place['dot_market_id']), ('us-mt-jordan', [], None))
         self.assertIsNone(self.answer({'answers': {}}))  # intake still finishes
 
-    # Planning nodes after intake (stubs for now; see the contracts in state.py)
+    # Planning nodes after intake; this fixture has no historical fare table.
 
     def test_flying_trip_runs_all_planning_nodes(self):
-        self.start(COMPLETE)
-        self.assertIsNone(self.answer({'answers': {}}))
+        with patch('db.database.engine.connect',
+                   side_effect=AssertionError('Trip tests must use the fixture database')):
+            self.start(COMPLETE)
+            self.assertIsNone(self.answer({'answers': {}}))
         values = self.graph.get_state(self.config).values
         for key in ('flight_trends', 'flight_offers', 'hotel_options'):
             self.assertEqual(values[key]['status'], 'empty', key)
