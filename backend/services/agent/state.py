@@ -266,6 +266,9 @@ class FlightOffers(TypedDict):
 
 
 class HotelPick(TypedDict):
+    # Why it was picked: "cheapest" (1), "better_value" (1: a bit pricier, better rated),
+    # "upscale" (up to 3: nicer hotels still within hotel_budget)
+    role: Literal["cheapest", "better_value", "upscale"]
     hotel_id: str
     name: Optional[str]
     total_price: float               # whole stay, all rooms
@@ -286,13 +289,12 @@ class HotelOptions(TypedDict):
     rooms: NotRequired[int]
     hotel_budget: NotRequired[float]         # trip budget minus the cheapest flight, if any
     over_budget: NotRequired[bool]           # even the cheapest hotel doesn't fit
-    budget: NotRequired[Optional[HotelPick]] # cheap / middle / nicer, all within hotel_budget
-    mid: NotRequired[Optional[HotelPick]]
-    upper: NotRequired[Optional[HotelPick]]
+    picks: NotRequired[list[HotelPick]]      # up to 5, cheapest first, all within hotel_budget
     radius_m: NotRequired[int]
     unknown_amenities: NotRequired[list[str]]
     unmet_hard: NotRequired[list[str]]
-    rating_floor_applied: NotRequired[bool]
+    rating_floor_applied: NotRequired[bool]  # hotels rated below the floor were left out
+    preferences_used: NotRequired[bool]      # an AI call matched hotel_preferences to the picks
 
 
 class TripState(TypedDict):

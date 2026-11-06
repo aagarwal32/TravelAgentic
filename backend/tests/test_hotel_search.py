@@ -20,7 +20,7 @@ def flights(*shortlist, cheapest_total=None):
 class HotelSearchTests(unittest.TestCase):
     """The hotel search node's inputs: stay dates, rooms and hotel budget, with every fallback.
 
-    The real search (search_hotels_with_prices + pick_price_tiers) adds its tests here,
+    The real search (search_hotels_with_prices, then the picks) adds its tests here,
     with LiteAPI mocked.
     """
 
