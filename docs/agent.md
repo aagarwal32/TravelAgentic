@@ -59,36 +59,53 @@ optional when the app starts; AI calls raise a clear error if it is missing.
 A departure is either an **exact date** (`depart_date`) or a **departure window**
 (`flexible_start` to `flexible_end`). "Sometime in December" means the user can
 leave on *any* day from December 1 to December 31. The window only describes the
-departure; it says nothing about when the trip ends.
+departure; the user can also supply a fixed return date or a number of nights.
+Any departure selected later must satisfy those details too.
 
-A round trip also needs its length. Which card asks for it depends on the departure:
+A round trip needs a return date or a stated stay length. If neither is known,
+intake asks for the return date, for both exact and flexible departures:
 
 | Trip | What intake needs | Card asked if missing |
 |---|---|---|
 | One-way | departure date or window | none |
 | Round trip, exact departure date | `return_date` or `trip_nights` (code fills in the other) | "When do you want to come back?" (date picker, from the departure date) |
-| Round trip, departure window | `trip_nights` | "How many nights do you want to stay?" (number, 1 to 30) |
+| Round trip, departure window | `return_date` or `trip_nights`; both are kept if supplied and compatible | "When do you want to come back?" (date picker, from the window's start) |
 
-A fixed return date does not fit a departure window: "leave any day in December,
-back on the 15th" rules out most of the window, and the old "latest date you could
-be back by" card only accepted dates on or after the window's end. So a flexible
-round trip stores the length of the stay instead, and later steps search "depart
-any day in the window, return `trip_nights` later". The nights card is a number
-box, so answering it never calls the AI; out-of-range answers show the card again
-with "Enter a number of nights from 1 to 30."
+A fixed return can fall inside the departure window. "Sometime in December,
+return December 15" preserves December 1–31 and the December 15 return; it does
+not ask for nights. The return picker uses the **start**, not the end, of the
+departure window as its minimum. Its fixed answer is saved without an AI call.
+
+For this app, **"return by December 15" means the same exact return date as
+"return on December 15"**. It is not a separate latest-return deadline.
+
+If the user supplies nights instead ("sometime in December, stay 2 nights"),
+intake accepts `trip_nights` without asking a return-date question. Stated nights
+must be 1–30. A window plus return date without nights leaves the length unknown
+until a departure is selected; the code does not invent a duration.
 
 Date arithmetic is done in code, not by the AI: `normalize_dates` in `state.py`
-runs every time trip details are validated, so it also cleans up details saved
-before this rule existed.
+runs every time trip details are validated, including when saved details are
+loaded. It preserves valid window/return combinations and rejects incompatible ones.
 
 - exact date + `trip_nights` → `return_date` = departure + nights
 - exact date + `return_date` → `trip_nights` = nights in between when that is 1 to
   30; a same-day return or a longer stay is still accepted, with no `trip_nights`
-- both given and they disagree → `return_date` wins, `trip_nights` is recalculated
-- a new value for one of them ("actually 6 nights") replaces the value that was
-  derived from the old one
-- departure window + `return_date` → `return_date` is dropped and any saved
-  `trip_nights` is kept
+- exact departure, both given and they disagree → `return_date` wins, `trip_nights`
+  is recalculated
+- exact departure, a new value for one of them ("actually 6 nights") replaces the
+  value that was derived from the old one
+- departure window + `return_date` → both are preserved; the return cannot be
+  before the window starts
+- departure window + `return_date` + `trip_nights` → return minus nights must fall
+  inside the window, including its boundaries; the original window stays saved
+- with a window, editing nights does not erase the return date, and editing the
+  return date does not erase nights; an incompatible update is rejected
+
+For example, a December 1–31 window with a December 15 return and 2 nights implies
+a December 13 departure. A December 2 return with 2 nights would require leaving
+November 30, so it is rejected. A January 2 return with 2 nights is valid because
+December 31 is inside the window.
 
 `EXTRACT_PROMPT` only extracts what the user said ("stay 2 nights" → `trip_nights: 2`,
 "for a week" → 7, "a weekend" → 2, "2–3 nights" → 3). It never turns nights into
@@ -251,9 +268,13 @@ its own test file. `tests/planning_fixtures.py` has sample trips and
   - Hotels without flights: the full budget, and dates from the trip.
 - **Data only:** prices come from Table 6, Duffel or LiteAPI, never from the AI. Live
   results have `fetched_at`. Dates are ISO strings and money is USD.
-- **Window → dates:** `flight_trends` turns a departure window into up to 3 concrete
-  departure dates (`candidate_dates`), each returning `trip_nights` later. Flights and
-  hotels use those dates.
+- **Window → dates:** the future `flight_trends` implementation must produce
+  `candidate_dates` that satisfy the original window and the supplied return details:
+  - Nights only: up to 3 departures inside the window, returning `trip_nights` later.
+  - Fixed return only: up to 3 departures inside the window and no later than the
+    fixed return, all using that same return date.
+  - Fixed return and nights: the single departure given by return minus nights.
+  Flights and hotels use those concrete dates. Flight nodes are still stubs.
 
 **What each node reads:**
 
@@ -269,4 +290,6 @@ its own test file. `tests/planning_fixtures.py` has sample trips and
   first candidate dates, else the trip's own dates), rooms (one per 2 travelers) and
   the hotel budget (budget minus `cheapest_total`). With no stay length (no
   `trip_nights` and no return date, e.g. a one-way trip), it is `"skipped"`. These
-  inputs already work in the stub.
+  inputs already work in the stub. Without flight/trend dates, a window plus
+  return and nights uses return minus nights for check-in. Otherwise it uses the
+  exact departure or window start, with checkout from the return date or nights.
