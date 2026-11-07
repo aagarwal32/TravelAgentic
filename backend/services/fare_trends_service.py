@@ -8,22 +8,25 @@ What the numbers mean (read this before showing them to a user):
   be city1. Chicago -> Denver and Denver -> Chicago are the same route.
 - Small markets (and many Hawaii / Alaska routes) are not in Table 6 at all.
 
-The agent's trends node (not built yet) should call the *_for_markets functions: they
+The agent's flight_trends node calls the *_for_markets functions: they
 take the DOT city market ids of the places resolved during intake (Place.dot_market_id,
 see services/location_service.py), so they never interpret a city name. The original functions take city names as the
 user said them ("Chicago", "denver"); they are thin wrappers kept for testing by hand
-and give the same results. Every function returns a plain dict that a LangGraph tool
-can hand to the LLM as is. When there is no data, a market id is missing, or a city is
+and give the same results. These presentation functions return plain dicts. When
+there is no data, a market id is missing, or a city is
 unknown or ambiguous, the result is
     {"no_history": True, "reason": "..."}
 instead of an exception, so the trip search can continue with live prices only.
-All aggregation happens in SQL; dollar amounts are rounded to cents.
+The original presentation functions aggregate in SQL and round dollars to cents.
+The Issue #34 comparison helpers below retain full precision until presentation.
 """
 
-from datetime import date
+from datetime import date, timedelta
+from math import isfinite
+from collections.abc import Iterable, Mapping
 from typing import NamedTuple
 
-from sqlalchemy import and_, func, or_, select, union
+from sqlalchemy import and_, case, func, or_, select, tuple_, union, union_all
 from sqlalchemy.orm import Session
 
 from models.airfare import AirfareQuarter
@@ -32,6 +35,220 @@ SOURCE = "DOT Consumer Airfare Report, Table 6"
 FARE_TYPE = "average each-way, USD"
 QUARTER_MONTHS = {1: "Jan-Mar", 2: "Apr-Jun", 3: "Jul-Sep", 4: "Oct-Dec"}
 MAX_LISTED_MATCHES = 5  # how many candidate markets an "ambiguous city" reason names
+MARKET_SIZE_QUARTERS = 4
+ALTERNATIVE_MAX_HOME_FARE_RATIO = 0.80
+CLOSER_MIN_CHEAPEST_FARE_RATIO = 0.85
+CLOSER_MAX_DISTANCE_RATIO = 0.80
+
+
+class MarketSizeSnapshot(NamedTuple):
+    """One shared coverage window and summed Table 6 passengers/day per market."""
+
+    quarters: tuple[tuple[int, int], ...]  # newest first; fewer than four if necessary
+    passenger_totals: dict[int, float]
+
+
+class FareCandidate(NamedTuple):
+    """Service-level selection input, not the planning graph's RouteOption contract."""
+
+    market_id: int
+    fare: float | None
+    distance_km: float
+
+
+def get_market_passenger_totals(db: Session) -> MarketSizeSnapshot:
+    """Compare market sizes over the dataset's same newest four loaded quarters.
+
+    Table 6 passengers are passengers/day, so these sums are a relative size index,
+    not annual unique travelers. Missing market-quarter rows contribute nothing;
+    an older market never gets its own older four-quarter window. Airports are
+    never joined, so two airports in Chicago cannot double Chicago's passengers.
+
+    A route is directionless. Normalize its endpoint ids and group once per year
+    and quarter before counting each endpoint. Defensive duplicate representations
+    contribute MAX(passengers), not a sum; genuine Table 6 has one pair-quarter row.
+    Conflicting duplicate values therefore need a source-data audit, not addition.
+    Database errors propagate for the flight_trends node to map to an empty status.
+    """
+    quarters = tuple(tuple(row) for row in db.execute(
+        select(AirfareQuarter.year, AirfareQuarter.quarter).distinct()
+        .order_by(AirfareQuarter.year.desc(), AirfareQuarter.quarter.desc())
+        .limit(MARKET_SIZE_QUARTERS)
+    ))
+    if not quarters:
+        return MarketSizeSnapshot((), {})
+    a, b = AirfareQuarter.citymarketid_1, AirfareQuarter.citymarketid_2
+    first = case((a <= b, a), else_=b)
+    second = case((a <= b, b), else_=a)
+    routes = (
+        select(first.label("first"), second.label("second"),
+               func.max(AirfareQuarter.passengers).label("passengers"))
+        .where(tuple_(AirfareQuarter.year, AirfareQuarter.quarter).in_(quarters))
+        .group_by(first, second, AirfareQuarter.year, AirfareQuarter.quarter)
+        .cte("market_routes")
+    )
+    endpoints = union_all(
+        select(routes.c.first.label("market_id"), routes.c.passengers),
+        select(routes.c.second.label("market_id"), routes.c.passengers)
+        .where(routes.c.first != routes.c.second),
+    ).subquery()
+    totals = db.execute(
+        select(endpoints.c.market_id, func.sum(endpoints.c.passengers))
+        .group_by(endpoints.c.market_id).order_by(endpoints.c.market_id)
+    )
+    return MarketSizeSnapshot(quarters, dict(totals.all()))
+
+
+def _usable_fares(origin_market_id: int | None, dest_market_id: int | None):
+    """The loader accepts finite positive fares; reject unusable hand-loaded rows too."""
+    return and_(
+        _route_filter(origin_market_id, dest_market_id),
+        AirfareQuarter.fare > 0,
+        AirfareQuarter.fare < float("inf"),
+    )
+
+
+def get_route_fare_for_markets(db: Session, origin_market_id: int | None,
+                              dest_market_id: int | None,
+                              quarters: Iterable[int] | None = None) -> float | None:
+    """Unrounded mean each-way fare over usable rows in the requested quarters.
+
+    Like get_price_trend_for_markets, all available years have equal row weight;
+    this is not passenger-weighted and does not average quarter means together.
+    Fall back to the all-year route mean ONLY if no requested-quarter fare exists.
+    None (or an empty iterable) requests the all-year average. The caller supplies
+    trip quarters using the existing date/window semantics; no dates are invented.
+    """
+    if origin_market_id is None or dest_market_id is None or origin_market_id == dest_market_id:
+        return None
+    selected = tuple(quarters) if quarters is not None else ()
+    if any(q not in QUARTER_MONTHS for q in selected):
+        raise ValueError("quarters must be between 1 and 4")
+    match = _usable_fares(origin_market_id, dest_market_id)
+    query = select(func.avg(AirfareQuarter.fare)).where(match)
+    if selected:
+        fare = db.scalar(query.where(AirfareQuarter.quarter.in_(selected)))
+        if fare is not None:
+            return fare
+    return db.scalar(query)
+
+
+def get_quarterly_fares_for_markets(db: Session, origin_market_id: int | None,
+                                   dest_market_id: int | None) -> dict[int, float | None]:
+    """Raw Q1-Q4 means over all years, matching by_quarter with explicit None gaps.
+
+    Unlike selection fares this never fills a missing quarter with the annual mean.
+    Round values only when adapting them to the chart contract.
+    """
+    fares = dict.fromkeys(QUARTER_MONTHS)
+    if origin_market_id is None or dest_market_id is None or origin_market_id == dest_market_id:
+        return fares
+    fares.update(db.execute(
+        select(AirfareQuarter.quarter, func.avg(AirfareQuarter.fare))
+        .where(_usable_fares(origin_market_id, dest_market_id))
+        .group_by(AirfareQuarter.quarter)
+    ).all())
+    return fares
+
+
+def select_alternative(candidates: Iterable[FareCandidate],
+                       home_fare: float | None) -> FareCandidate | None:
+    """Pick one candidate using the original home fare and original cheapest route.
+
+    Savings must reach 20%, inclusive. When the home fare is unavailable, any usable
+    candidate fare qualifies. A closer candidate may replace the original cheapest
+    only with a 20% distance reduction and cheapest >= 85% of its fare: $100 may
+    replace $85, but not $84. This is deliberately not a 15% markup comparison.
+    Both tests always use the original cheapest, never a successive replacement.
+    Equal cheapest fares are resolved by stable market id before testing distance;
+    eligible replacements are ordered by distance, fare, then stable market id.
+    """
+    home_available = home_fare is not None and isfinite(home_fare) and home_fare > 0
+    qualifying = []
+    for candidate in candidates:
+        if not isfinite(candidate.distance_km) or candidate.distance_km < 0:
+            raise ValueError("candidate distance must be finite and nonnegative")
+        if candidate.fare is None or not isfinite(candidate.fare) or candidate.fare <= 0:
+            continue
+        if not home_available or candidate.fare <= ALTERNATIVE_MAX_HOME_FARE_RATIO * home_fare:
+            qualifying.append(candidate)
+    if not qualifying:
+        return None
+    cheapest = min(qualifying, key=lambda c: (c.fare, c.market_id))
+    closer = [c for c in qualifying
+              if cheapest.fare >= CLOSER_MIN_CHEAPEST_FARE_RATIO * c.fare
+              and c.distance_km <= CLOSER_MAX_DISTANCE_RATIO * cheapest.distance_km]
+    return min(closer, key=lambda c: (c.distance_km, c.fare, c.market_id)) if closer else cheapest
+
+
+def estimate_flight_cost(each_way_fare: float | None, travelers: int | None,
+                         trip_type: str | None) -> float | None:
+    """Historical flight-only estimate; a round trip is estimated as two each-way fares.
+
+    The flight_trends node uses the home route and compares this amount with the
+    whole trip budget. Such a comparison says
+    nothing about whether hotels or other trip costs also fit. Missing/invalid
+    required inputs yield None, never guessed travelers or a guessed trip type.
+    """
+    directions = {"one_way": 1, "round_trip": 2}.get(trip_type)
+    if (each_way_fare is None or not isfinite(each_way_fare) or each_way_fare <= 0
+            or type(travelers) is not int or not 1 <= travelers <= 9
+            or directions is None):
+        return None
+    estimate = each_way_fare * travelers * directions
+    return estimate if isfinite(estimate) else None
+
+
+def select_departure_dates(start: date, end: date,
+                           home_quarter_fares: Mapping[int, float | None],
+                           alternative_quarter_fares: Iterable[Mapping[int, float | None]] = ()) -> list[date]:
+    """Sample the cheapest calendar-quarter segment of feasible departure dates.
+
+    The caller must derive feasible inclusive bounds using the actual constraints
+    contract. Flexible bounds describe departures, so returns may be later than
+    the window. The node supplies return dates using the validated stay length;
+    this helper only selects departures.
+    Home seasonality wins whenever any home quarter in the window has a fare.
+    Otherwise use each segment's lowest seasonal fare among selected alternatives.
+    Missing fares never rank as zero or receive all-year fallback. With no fares,
+    choose the earliest segment; price ties also choose the earliest segment.
+    Its first, lower-middle, and last dates are deduplicated and chronological.
+    """
+    if end < start:
+        raise ValueError("end date is before start date")
+    segments = []
+    cursor = start
+    while True:
+        quarter = _quarter_of(cursor)
+        if cursor.year == date.max.year and quarter == 4:
+            segment_end = end
+        else:
+            next_quarter = (date(cursor.year + 1, 1, 1) if quarter == 4
+                            else date(cursor.year, quarter * 3 + 1, 1))
+            segment_end = min(end, next_quarter - timedelta(days=1))
+        segments.append((cursor, segment_end, quarter))
+        if segment_end == end:
+            break
+        cursor = next_quarter
+
+    def usable(fare):
+        return fare is not None and isfinite(fare) and fare > 0
+
+    use_home = any(usable(home_quarter_fares.get(q)) for _, _, q in segments)
+    alternatives = list(alternative_quarter_fares)
+    ranked = []
+    for first, last, quarter in segments:
+        fares = ([home_quarter_fares.get(quarter)] if use_home
+                 else [fares.get(quarter) for fares in alternatives])
+        available = [fare for fare in fares if usable(fare)]
+        if available:
+            ranked.append((min(available), first, last))
+    if ranked:
+        _, first, last = min(ranked)
+    else:
+        first, last, _ = segments[0]
+    middle = first + timedelta(days=(last - first).days // 2)
+    return sorted({first, middle, last})
 
 
 class _Route(NamedTuple):

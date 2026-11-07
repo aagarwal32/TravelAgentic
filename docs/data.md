@@ -151,3 +151,94 @@ Survey), U.S. Geological Survey (GNIS), OurAirports (ourairports.com), and U.S.
 Department of Transportation (Consumer Airfare Report). SimpleMaps' US Cities
 database (CC BY 4.0) was considered, but its download page blocks scripted downloads,
 so `download_datasets.py` can't fetch it.
+
+
+## Issue #34 comparison data
+
+`get_market_passenger_totals` uses the dataset-wide newest four **distinct loaded**
+year/quarter pairs, newest first. Every market uses that same window; a market
+with missing recent rows cannot substitute its own older quarters. Fewer than
+four loaded pairs yield a smaller shared window. Table 6's `passengers` measures
+passengers/day, so the summed values form a relative size index, not annual unique
+travelers. An absent market has zero recorded passengers for this comparison.
+
+Each unordered route is normalized by endpoint market IDs and grouped once per
+year/quarter before its passenger value is attributed once to each endpoint. There
+is no airport join: ORD and MDW do not multiply Chicago's size. Defensive reversed
+or repeated duplicates use the maximum passenger value once; conflicting source
+values require an audit rather than addition. A self-pair is counted once. Home
+markets and smaller markets are excluded, equal sizes remain eligible, and a place
+without a home market has no size filter.
+
+Both comparison sides use their own resolved city coordinates and the nearest
+eligible airport per DOT market within an inclusive 400 km straight-line radius.
+Fare selection uses the mean of positive finite route fares in relevant quarters
+across all loaded years. Rows have equal weight, without passenger weighting or
+averaging quarter means together. The all-year route mean is used only when no
+usable requested-quarter fare exists. Comparisons retain full precision. A fare
+must be at most 80% of the original home fare; when the home fare is missing, any
+valid candidate fare qualifies. Replacing the original cheapest requires both
+`cheapest_fare >= 0.85 * closer_fare` and
+`closer_distance <= 0.80 * cheapest_distance`. See the
+[selection rules and five decisions](agent.md#issue-34-flight-trends-and-alternative-airports).
+
+Chart values are Q1–Q4 means across loaded years, matching the existing
+`by_quarter` aggregation. Missing quarters stay null. Do not interpolate,
+zero-fill, or use all-year fallback to fill chart gaps; retain an entirely empty
+home series too. These are historical average each-way fares, not live quotes.
+
+### Airport evidence and limitations
+
+The persisted schema does not retain mapping provenance, the original
+OurAirports type/service fields, or an independent current commercial-search
+flag. Presence in `Place.airports` or a non-null DOT market alone is insufficient.
+The real snapshot maps TEB/Teterboro to market 35167 by city-name fallback and
+contains recent Table 6 history for that market. A code blacklist would not
+repair the missing metadata.
+
+Candidate and search-airport helpers therefore require an explicit mapping from
+the existing local Table 1a file plus the loader's `MARKET_FIXES`, applying
+`RENAMED_CODES`. Table 1a takes precedence. The local airport row must exist and
+its market must agree with the mapping. CMI is supported by the checked mappings.
+TEB, FTW and BJC lack this evidence and are excluded. Intake's wider
+`Place.airports` lists remain unchanged. The node reads the existing metadata; it
+does not download files, ingest rows or add schema fields.
+
+This conservative rule can omit legitimate name-matched or unmapped commercial
+airports. Without a home market, only verified codes already associated with the
+place form the home search group, followed by the selected alternative's codes.
+Without evidence that group is empty. Home precedes alternative; each group is
+sorted by unrounded city-to-airport distance and IATA, with duplicates removed.
+Historical eligibility is not proof of currently bookable service. More complete
+coverage requires reliable source evidence or retained provenance.
+
+### Read-only analysis
+
+The node opens a database session for queries and does not ingest or update
+location or fare data. Required-data access errors, including missing, unreadable
+or malformed local Table 1a metadata, become an `empty` result with a reason. An
+existing but empty fares table is valid absence of history: the analysis remains
+`ok`, with unavailable fares and chart quarters represented as null. Empty or
+missing required airport metadata is an availability error.
+
+Flight-cost estimates use the home selection fare times travelers and directions;
+round-trip doubling is an estimate. Comparing the result with the whole budget
+does not include hotels. Missing inputs remain unavailable. Driving hours are
+only the service heuristic `straight_line_km * 1.3 / 80`; the node's unchanged
+`RouteOption` contract exposes straight-line distance, not driving time or price.
+
+For local acceptance, the Urbana → New York example reads the already available
+real database with SQLite `mode=ro` and `query_only`, records explicit constraints,
+runs the actual `flight_trends` node and validates its result using
+`assert_contract`. The evidence includes source coverage and database hashes.
+The [recorded output](issue-34-real-data.json) is produced by
+`python -m scripts.verify_flight_trends_node --database /path/to/database.db --table1a /path/to/dot_table1a_airports.csv`
+from `backend/`. Fixture tests are separate; they cannot replace this real-data
+run. The example was repeated through this checkout's node on November 6, 2026;
+contract validation passed and both database and Table 1a hashes stayed unchanged.
+During final submission preparation, the node, services and diagnostic scripts
+still matched the verified source hashes, the saved report matched its local
+verification copy, and both input-data hashes still matched the report. The
+existing result was reused without rerunning the node. The later trip-loop test
+isolation fix does not change the node or its real-data inputs.
+No source data or database belongs in the source-change deliverable.
