@@ -21,7 +21,9 @@ instead of a different city that happens to start with the same letters.
 
 import re
 import unicodedata
-from math import asin, cos, radians, sin, sqrt
+from collections.abc import Mapping
+from math import asin, cos, isfinite, radians, sin, sqrt
+from typing import NamedTuple
 
 from sqlalchemy import inspect, select
 from sqlalchemy.exc import OperationalError
@@ -31,6 +33,9 @@ from models.location import Airport, USPlace
 from services.agent.state import Place
 
 DEFAULT_RADIUS_KM = 120   # how far a "nearby" airport can be (straight line)
+ALTERNATIVE_MARKET_RADIUS_KM = 400  # city to nearest eligible airport, straight line
+ROAD_DISTANCE_FACTOR = 1.3  # rough detour allowance, not a measured road distance
+ASSUMED_DRIVING_SPEED_KMH = 80
 MAX_CHOICES = 5           # most places shown on a "Which Greenville?" card
 NO_LOCATION_DATA = ("The location tables (us_places, airports) are missing or empty. Load them "
                     "from backend/ with: python -m scripts.ingest_locations (see docs/data.md)")
@@ -265,3 +270,112 @@ def get_place(db: Session, place_id: str) -> Place | None:
 def place_label(place: Place) -> str:
     """How a place is shown to the user: "Greenville, SC"."""
     return f"{place.city}, {place.state}"
+
+
+class NearbyMarket(NamedTuple):
+    """Service-level candidate, independent of the planning node's output contract."""
+
+    market_id: int
+    distance_km: float
+    nearest_airport: str
+
+
+def approximate_drive_hours(straight_line_km: float) -> float:
+    """Rough drive-time estimate: straight-line km * 1.3 / 80 km/h.
+
+    This is a documented heuristic, not a route calculation, road mileage, or a
+    ground-transport price. Display it as approximate and keep straight-line
+    distance separately labelled. Traffic, road access and geography can differ
+    substantially. FlightTrends has no drive-time field; its distance_km remains
+    the straight-line measurement, with this estimate available to diagnostics.
+    """
+    if not isfinite(straight_line_km) or straight_line_km < 0:
+        raise ValueError("straight_line_km must be finite and nonnegative")
+    return straight_line_km * ROAD_DISTANCE_FACTOR / ASSUMED_DRIVING_SPEED_KMH
+
+
+def _search_eligible_airports(db: Session, verified_airport_markets: Mapping[str, int]) -> list[Airport]:
+    """Conservative eligibility using only metadata retained by location ingestion.
+
+    Ingestion requires US scheduled medium/large airports with IATA codes, but that
+    admits some general-aviation fields. DOT IDs alone are insufficient because
+    name matching can assign those fields a market. The caller supplies confirmed
+    airport mappings from local Table 1a plus the loader's hand-checked MARKET_FIXES,
+    applying its RENAMED_CODES aliases. Only matching local rows are eligible.
+
+    The schema retains neither mapping provenance nor an independent commercial
+    flag, so the explicit mapping is required; no missing evidence is invented.
+    This conservative rule can omit legitimate airports outside those sources and
+    is not proof of currently bookable service. Existing intake's wider
+    Place.airports list remains unchanged.
+    """
+    try:
+        airports = list(db.scalars(select(Airport)))
+    except OperationalError:
+        db.rollback()
+        if inspect(db.get_bind()).has_table(Airport.__tablename__):
+            raise
+        raise LocationDataMissing(NO_LOCATION_DATA) from None
+    if not airports:
+        raise LocationDataMissing(NO_LOCATION_DATA)
+    return [airport for airport in airports if airport.dot_market_id is not None
+            and verified_airport_markets.get(airport.iata) == airport.dot_market_id]
+
+
+def nearby_alternative_markets(db: Session, place: Place,
+                               passenger_totals: Mapping[int, float],
+                               verified_airport_markets: Mapping[str, int]) -> list[NearbyMarket]:
+    """Distinct nearby DOT markets at least as large as this place's home market.
+
+    `passenger_totals` must use the same dataset-wide newest four quarters for every
+    market (fare_trends_service.get_market_passenger_totals). No airport join belongs
+    in that aggregation. A market absent from those quarters has zero recorded
+    passengers. A place without a home market has no size filter.
+
+    Each side calls this with its own resolved Place; in particular arrival distance
+    is measured from the destination city. Distances stay unrounded for both the
+    inclusive 400 km boundary and the later closer-candidate comparison. ORD/MDW
+    become one candidate with the distance of the nearer eligible airport.
+    """
+    nearest: dict[int, NearbyMarket] = {}
+    home = place.dot_market_id
+    for airport in _search_eligible_airports(db, verified_airport_markets):
+        market = airport.dot_market_id
+        if market == home:
+            continue
+        if home is not None and passenger_totals.get(market, 0) < passenger_totals.get(home, 0):
+            continue
+        distance = distance_km(place.latitude, place.longitude, airport.latitude, airport.longitude)
+        if distance > ALTERNATIVE_MARKET_RADIUS_KM:
+            continue
+        candidate = NearbyMarket(market, distance, airport.iata)
+        previous = nearest.get(market)
+        if previous is None or (distance, airport.iata) < (previous.distance_km, previous.nearest_airport):
+            nearest[market] = candidate
+    return sorted(nearest.values(), key=lambda candidate: (candidate.distance_km, candidate.market_id))
+
+
+def search_airport_codes(db: Session, place: Place,
+                         verified_airport_markets: Mapping[str, int],
+                         alternative_market_id: int | None = None) -> list[str]:
+    """Eligible home airports first, then the selected alternative, for one side.
+
+    This returns codes only, not a guessed flight_search node payload. Each group is
+    ordered by unrounded distance from the supplied city and then IATA. With no home
+    market, only metadata-verified codes associated with the place form the first
+    group. Stale, unknown and unmapped Place.airports entries are never copied.
+    """
+    airports = _search_eligible_airports(db, verified_airport_markets)
+    associated = set(place.airports)
+
+    def order(airport: Airport):
+        return (distance_km(place.latitude, place.longitude, airport.latitude, airport.longitude),
+                airport.iata)
+
+    if place.dot_market_id is None:
+        home = [airport for airport in airports if airport.iata in associated]
+    else:
+        home = [airport for airport in airports if airport.dot_market_id == place.dot_market_id]
+    alternative = [airport for airport in airports
+                   if alternative_market_id is not None and airport.dot_market_id == alternative_market_id]
+    return list(dict.fromkeys(airport.iata for airport in sorted(home, key=order) + sorted(alternative, key=order)))
