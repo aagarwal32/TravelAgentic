@@ -163,7 +163,8 @@ no AI and no API calls, and saves the result next to the text the user typed:
 "destination": "Greenville",
 "destination_place": {"id": "us-sc-greenville", "city": "Greenville", "state": "SC",
                       "latitude": 34.8526, "longitude": -82.394,
-                      "airports": ["GSP", "AVL"], "dot_market_id": 31871}
+                      "airports": ["GSP", "AVL"], "dot_market_id": 31871,
+                      "flight_airports": ["GSP", "AVL"]}
 ```
 
 Hotel search accepts this saved place, and fare-trend functions accept its market ID.
@@ -177,6 +178,8 @@ stubs and call no service.
   closest airport can be a general-aviation field that DOT puts in no market (Meacham,
   FTW, for Fort Worth; BJC for Denver), so it is skipped for the market but still
   listed in `airports`.
+  `flight_airports` keeps the subset with a DOT market for Duffel searches. Older
+  saved places without that field still use their saved airport list.
   This deliberately differs from Issue #21's literal closest-airport rule. Approval
   of this interpretation is still required; the behavior is preserved in this change.
 - Only code fills `*_place`. The AI never sees or sets them, and changing the city text
@@ -253,9 +256,10 @@ intake done ─┬─ fly ──► flight_trends ─► flight_search ─┐
 | `flight_search.py` | `flight_offers` | `FlightOffers` | Duffel | `tests/test_flight_search.py` |
 | `hotel_search.py` | `hotel_options` | `HotelOptions` | LiteAPI | `tests/test_hotel_search.py` |
 
-All three are **stubs** for now: they return a valid, empty result, so each one can be
-built on its own branch. Replace a stub's body, keep its contract, and add tests to
-its own test file. `tests/planning_fixtures.py` has sample trips and
+**Flight search is implemented** using the guarded Duffel client and parsing/ranking
+helpers in `services/flight_service.py`. Flight trends and hotel search are still
+stubs; keep their contracts when replacing them and add tests to their own test
+files. `tests/planning_fixtures.py` has sample trips and
 `assert_contract`, which fails if a result has a key its contract doesn't list.
 
 **Shared rules** (the comment block above the contracts in `state.py`):
@@ -264,7 +268,7 @@ its own test file. `tests/planning_fixtures.py` has sample trips and
   e.g. flights on a driving trip) or `"empty"` (it ran and found nothing), plus a
   `reason` when it isn't `"ok"`. An `"ok"` result has every key of its contract.
 - **Fallbacks:** each node works without the result before it.
-  - Flights without trends: the places' own airports, on the trip's dates.
+  - Flights without trends use the places' own eligible airports and trip dates.
   - Hotels without flights: the full budget, and dates from the trip.
 - **Data only:** prices come from Table 6, Duffel or LiteAPI, never from the AI. Live
   results have `fetched_at`. Dates are ISO strings and money is USD.
@@ -274,7 +278,21 @@ its own test file. `tests/planning_fixtures.py` has sample trips and
   - Fixed return only: up to 3 departures inside the window and no later than the
     fixed return, all using that same return date.
   - Fixed return and nights: the single departure given by return minus nights.
-  Flights and hotels use those concrete dates. Flight nodes are still stubs.
+  Flight search validates trend candidates and uses them as seeds for
+  `_initial_departure_dates()` in `services/flight_service.py`. The helper chooses
+  at most 3 initial dates, restricting departures to the fixed return when supplied.
+  Return plus nights allows only the implied departure; exact dates use one search
+  date. One-way flight searches never add a return leg, even with nights for hotels.
+  - Flexible choices minimize exposure to actual/observed nationwide US federal
+    holidays and their adjacent days on departure and return, using the
+    [OPM calendar rules](https://www.opm.gov/policy-data-oversight/pay-leave/federal-holidays/).
+    Observed New Year's Day can affect the preceding December. A holiday-only
+    window remains searchable, and explicit dates are never shifted.
+  - The least holiday-affected dates are divided into up to 3 chronological groups.
+    Each group prefers dates outside March 8–24 (a coarse spring-break heuristic,
+    not a school calendar), then Tue/Wed/Sat departures, then valid trend seeds.
+    Ties favor proximity to the window's start, midpoint or end, then earlier dates.
+    Duffel fares from those probes determine which neighboring dates to try next.
 
 **What each node reads:**
 
@@ -283,9 +301,32 @@ its own test file. `tests/planning_fixtures.py` has sample trips and
   `candidate_dates`).
 - **`flight_search`**: `search_airports` and `candidate_dates` (fallback: the places'
   airports and the trip's dates), travelers and `max_connections`. All Duffel calls
-  go through one guarded client limited by `DUFFEL_DAILY_SEARCH_LIMIT`. It writes a
-  shortlist of about 5 offers chosen in code, each with measured `metrics`, and
-  `cheapest_total`.
+  go through one guarded client limited by `DUFFEL_DAILY_SEARCH_LIMIT`. It writes
+  up to five shortlisted offers with measured `metrics` and `cheapest_total`.
+  See [flights.md](flights.md) for setup, ranking and a test-mode run.
+  - Duplicate airports/dates and identical origin/destination airport pairs are
+    excluded. The primary home route is probed first. When a flexible probe finds
+    fares, the node searches nearby dates around the cheapest probe and keeps a
+    slot for a trends alternative when one is available. Trend candidates must
+    satisfy the original departure bounds, return and nights.
+  - `MAX_SEARCHES_PER_TRIP = 6` in `nodes/flight_search.py` caps each node run at six
+    guarded search attempts, in addition to the client's daily limit. Failed or
+    blocked attempts consume a slot. Reaching the per-trip cap retains the results
+    found so far and reports `"per-trip search limit reached"` when combinations
+    remain.
+  - Each search requests all returned offers. Expired, non-USD, malformed and
+    incomplete offers are excluded; the combined results are deduplicated by offer
+    ID and checked for expiry again before shortlisting.
+  - The shortlist includes the cheapest, fastest, best balance and cheapest
+    eligible trends alternative when available. Ranking weighs price, duration,
+    stops and layovers. Similar low-risk itineraries can displace offers with
+    overnight connections or airport changes. Results are sorted by fare.
+  - `searches_made` counts calls to the guarded search helper, including failed or
+    blocked attempts. The daily HTTP allowance is maintained by the client per
+    process. The node continues after individual search failures and stops if
+    credentials or the allowance block further requests. It reports failures in
+    `reason` and retains usable offers with `"ok"` status. A search with no usable
+    offers returns `"empty"`, so hotels retain the full budget.
 - **`hotel_search`**: the stay dates (from the cheapest shortlisted flight, else trends'
   first candidate dates, else the trip's own dates), rooms (one per 2 travelers) and
   the hotel budget (budget minus `cheapest_total`). With no stay length (no
@@ -293,3 +334,19 @@ its own test file. `tests/planning_fixtures.py` has sample trips and
   inputs already work in the stub. Without flight/trend dates, a window plus
   return and nights uses return minus nights for check-in. Otherwise it uses the
   exact departure or window start, with checkout from the return date or nights.
+
+### Refreshing a selected flight offer
+
+`services.flight_service.refresh_offer(offer_id, travelers, *, from_alternative_airport=False)`
+fetches one offer's current details with `GET /air/offers/{offer_id}` through the
+same guarded Duffel client. Pass the original traveler count so per-person pricing
+is calculated correctly, and the original alternative-airport flag when applicable.
+It returns a newly parsed `FlightOffer` with the latest total, expiry, itinerary and
+baggage metrics. Selection tags start empty because updated prices require reranking.
+
+Each invocation with valid inputs makes one counted HTTP attempt, with no automatic
+retry. Invalid inputs raise `ValueError` before a request. Missing credentials or an
+already-reached daily limit block the request before an HTTP attempt is counted.
+Unavailable, expired, non-USD, partial or malformed offers raise
+`DuffelError`. This is an explicit service helper; page reloads and graph execution
+do not invoke it automatically.

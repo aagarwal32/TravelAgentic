@@ -40,10 +40,13 @@ def date_missing(c: TripConstraints) -> list[str]:
 
 class TripLoopTests(unittest.TestCase):
     def setUp(self):
-        # Only the AI call in extract is mocked; each test queues the patches it returns
+        # Mock extraction and the flight-search boundary; all graph tests stay offline.
         patcher = patch('services.agent.nodes.extract.generate')
         self.ai = patcher.start()
         self.addCleanup(patcher.stop)
+        flights = patch('services.agent.nodes.flight_search._search_offers', return_value=[])
+        self.flights = flights.start()
+        self.addCleanup(flights.stop)
         self.engine = location_engine()
         self.addCleanup(self.engine.dispose)
         places = patch('services.agent.nodes.extract.SessionLocal', sessionmaker(bind=self.engine))
@@ -561,7 +564,10 @@ class TripLoopTests(unittest.TestCase):
         self.assertEqual((place['city'], place['state']), ('Fort Worth', 'TX'))
         self.assertEqual(place['airports'], ['FTW', 'DFW', 'DAL'])
         self.assertEqual(place['dot_market_id'], DALLAS_FORT_WORTH_MARKET)
-        self.assertEqual(set(place), {'id', 'city', 'state', 'latitude', 'longitude', 'airports', 'dot_market_id'})
+        self.assertEqual(place['flight_airports'], ['DFW', 'DAL'])
+        self.assertEqual(set(place), {
+            'id', 'city', 'state', 'latitude', 'longitude', 'airports', 'dot_market_id', 'flight_airports',
+        })
         self.assertEqual(self.constraints()['origin_place']['id'], 'us-il-chicago')
         self.assertEqual(self.constraints()['destination'], 'Fort Worth')  # the typed text is kept
 
@@ -774,7 +780,7 @@ class TripLoopTests(unittest.TestCase):
         self.assertEqual((place['id'], place['airports'], place['dot_market_id']), ('us-mt-jordan', [], None))
         self.assertIsNone(self.answer({'answers': {}}))  # intake still finishes
 
-    # Planning nodes after intake (stubs for now; see the contracts in state.py)
+    # Planning nodes after intake (Duffel mocked; see the contracts in state.py)
 
     def test_flying_trip_runs_all_planning_nodes(self):
         self.start(COMPLETE)
@@ -782,6 +788,7 @@ class TripLoopTests(unittest.TestCase):
         values = self.graph.get_state(self.config).values
         for key in ('flight_trends', 'flight_offers', 'hotel_options'):
             self.assertEqual(values[key]['status'], 'empty', key)
+        self.assertGreater(self.flights.call_count, 0)
         self.assertEqual(values['hotel_options']['checkin'], COMPLETE['depart_date'])
         self.assertEqual(values['messages'][-1].content, 'Your trip details are ready for planning.')
 
@@ -791,6 +798,7 @@ class TripLoopTests(unittest.TestCase):
         values = self.graph.get_state(self.config).values
         self.assertNotIn('flight_trends', values)
         self.assertNotIn('flight_offers', values)
+        self.flights.assert_not_called()
         self.assertEqual(values['hotel_options']['status'], 'empty')
 
     def test_empty_location_tables_are_reported(self):
