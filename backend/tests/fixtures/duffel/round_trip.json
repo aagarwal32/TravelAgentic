@@ -1,0 +1,109 @@
+{
+  "data": {
+    "live_mode": false,
+    "offers": [
+      {
+        "total_amount": "223.34",
+        "total_currency": "USD",
+        "expires_at": "2026-11-16T14:07:12.484833Z",
+        "id": "off_test_mode_fixture",
+        "slices": [
+          {
+            "duration": "PT2H13M",
+            "segments": [
+              {
+                "origin": {
+                  "iata_code": "CMI",
+                  "time_zone": "America/Chicago"
+                },
+                "destination": {
+                  "iata_code": "JFK",
+                  "time_zone": "America/New_York"
+                },
+                "departing_at": "2027-03-02T00:46:00",
+                "arriving_at": "2027-03-02T03:59:00",
+                "operating_carrier": {
+                  "name": "American Airlines"
+                },
+                "stops": [],
+                "passengers": [
+                  {
+                    "baggages": [
+                      {
+                        "type": "checked",
+                        "quantity": 1
+                      },
+                      {
+                        "type": "carry_on",
+                        "quantity": 1
+                      }
+                    ]
+                  },
+                  {
+                    "baggages": [
+                      {
+                        "type": "checked",
+                        "quantity": 1
+                      },
+                      {
+                        "type": "carry_on",
+                        "quantity": 1
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "duration": "PT2H13M",
+            "segments": [
+              {
+                "origin": {
+                  "iata_code": "JFK",
+                  "time_zone": "America/New_York"
+                },
+                "destination": {
+                  "iata_code": "CMI",
+                  "time_zone": "America/Chicago"
+                },
+                "departing_at": "2027-03-06T03:52:00",
+                "arriving_at": "2027-03-06T05:05:00",
+                "operating_carrier": {
+                  "name": "American Airlines"
+                },
+                "stops": [],
+                "passengers": [
+                  {
+                    "baggages": [
+                      {
+                        "type": "checked",
+                        "quantity": 1
+                      },
+                      {
+                        "type": "carry_on",
+                        "quantity": 1
+                      }
+                    ]
+                  },
+                  {
+                    "baggages": [
+                      {
+                        "type": "checked",
+                        "quantity": 1
+                      },
+                      {
+                        "type": "carry_on",
+                        "quantity": 1
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  }
+}

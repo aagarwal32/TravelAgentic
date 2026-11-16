@@ -147,7 +147,8 @@ no AI and no API calls, and saves the result next to the text the user typed:
 "destination": "Greenville",
 "destination_place": {"id": "us-sc-greenville", "city": "Greenville", "state": "SC",
                       "latitude": 34.8526, "longitude": -82.394,
-                      "airports": ["GSP", "AVL"], "dot_market_id": 31871}
+                      "airports": ["GSP", "AVL"], "dot_market_id": 31871,
+                      "flight_airports": ["GSP", "AVL"]}
 ```
 
 Hotel search accepts this saved place, and fare-trend functions accept its market ID.
@@ -161,6 +162,8 @@ search retain the planning contracts described below.
   closest airport can be a general-aviation field that DOT puts in no market (Meacham,
   FTW, for Fort Worth; BJC for Denver), so it is skipped for the market but still
   listed in `airports`.
+  `flight_airports` keeps the subset with a DOT market for Duffel searches. Older
+  saved places without that field still use their saved airport list.
   This deliberately differs from Issue #21's literal closest-airport rule. Approval
   of this interpretation is still required; the behavior is preserved in this change.
 - Only code fills `*_place`. The AI never sees or sets them, and changing the city text
@@ -237,9 +240,10 @@ intake done ─┬─ fly ──► flight_trends ─► flight_search ─┐
 | `flight_search.py` | `flight_offers` | `FlightOffers` | Duffel | `tests/test_flight_search.py` |
 | `hotel_search.py` | `hotel_options` | `HotelOptions` | LiteAPI | `tests/test_hotel_search.py` |
 
-`flight_trends` implements local historical analysis. `flight_search` remains a
-stub, and `hotel_search` computes its input dates, rooms and budget before returning
-an empty stub result. Their contracts and consumers are unchanged by Issue #34.
+`flight_trends` implements local historical analysis, and `flight_search` implements
+live searches using the guarded Duffel client and helpers in `services/flight_service.py`.
+`hotel_search` computes its input dates, rooms and budget before returning an empty
+stub result.
 `tests/planning_fixtures.py` has sample trips and `assert_contract`, which checks
 status, required top-level keys, allowed keys and non-success reasons. The node
 tests also assert every successful payload field and its nested contract.
@@ -250,13 +254,27 @@ tests also assert every successful payload field and its nested contract.
   e.g. flights on a driving trip) or `"empty"` (it ran and found nothing), plus a
   `reason` when it isn't `"ok"`. An `"ok"` result has every key of its contract.
 - **Fallbacks:** each node works without the result before it.
-  - Flights without trends: the places' own airports, on the trip's dates.
+  - Flights without trends use the places' own eligible airports and trip dates.
   - Hotels without flights: the full budget, and dates from the trip.
 - **Data only:** prices come from Table 6, Duffel or LiteAPI, never from the AI. Live
   results have `fetched_at`. Dates are ISO strings and money is USD.
 - **Window → dates:** `flight_trends` turns a departure window into up to 3 concrete
-  departure dates (`candidate_dates`), each returning `trip_nights` later. Flights and
-  hotels use those dates.
+  departure dates (`candidate_dates`), each returning `trip_nights` later. A saved
+  fixed return next to a window is normalized away by the current intake contract.
+  Flight search validates trend candidates and uses them as seeds for
+  `_initial_departure_dates()` in `services/flight_service.py`. The helper chooses
+  at most 3 initial dates; exact departures use one search date. One-way flight
+  searches never add a return leg, even with nights for hotels.
+  - Flexible choices minimize exposure to actual/observed nationwide US federal
+    holidays and their adjacent days on departure and return, using the
+    [OPM calendar rules](https://www.opm.gov/policy-data-oversight/pay-leave/federal-holidays/).
+    Observed New Year's Day can affect the preceding December. A holiday-only
+    window remains searchable, and explicit dates are never shifted.
+  - The least holiday-affected dates are divided into up to 3 chronological groups.
+    Each group prefers dates outside March 8–24 (a coarse spring-break heuristic,
+    not a school calendar), then Tue/Wed/Sat departures, then valid trend seeds.
+    Ties favor proximity to the window's start, midpoint or end, then earlier dates.
+    Duffel fares from those probes determine which neighboring dates to try next.
 
 **What each node reads:**
 
@@ -265,9 +283,32 @@ tests also assert every successful payload field and its nested contract.
   `candidate_dates`).
 - **`flight_search`**: `search_airports` and `candidate_dates` (fallback: the places'
   airports and the trip's dates), travelers and `max_connections`. All Duffel calls
-  go through one guarded client limited by `DUFFEL_DAILY_SEARCH_LIMIT`. It writes a
-  shortlist of about 5 offers chosen in code, each with measured `metrics`, and
-  `cheapest_total`.
+  go through one guarded client limited by `DUFFEL_DAILY_SEARCH_LIMIT`. It writes
+  up to 20 shortlisted offers with measured `metrics` and `cheapest_total`.
+  See [flights.md](flights.md) for setup, ranking and a test-mode run.
+  - Duplicate airports/dates and identical origin/destination airport pairs are
+    excluded. The primary home route is probed first. When a flexible probe finds
+    fares, the node searches nearby dates around the cheapest probe and keeps a
+    slot for a trends alternative when one is available. Trend candidates must
+    satisfy the original departure bounds, return and nights.
+  - `MAX_SEARCHES_PER_TRIP = 6` in `nodes/flight_search.py` caps each node run at six
+    guarded search attempts, in addition to the client's daily limit. Failed or
+    blocked attempts consume a slot. Reaching the per-trip cap retains the results
+    found so far and reports `"per-trip search limit reached"` when combinations
+    remain.
+  - Each search requests all returned offers. Expired, non-USD, malformed and
+    incomplete offers are excluded; the combined results are deduplicated by offer
+    ID and checked for expiry again before shortlisting.
+  - The shortlist includes the cheapest, fastest, best balance and cheapest
+    eligible trends alternative when available. Ranking weighs price, duration,
+    stops and layovers. Similar low-risk itineraries can displace offers with
+    overnight connections or airport changes. Results are sorted by fare.
+  - `searches_made` counts calls to the guarded search helper, including failed or
+    blocked attempts. The daily HTTP allowance is maintained by the client per
+    process. The node continues after individual search failures and stops if
+    credentials or the allowance block further requests. It reports failures in
+    `reason` and retains usable offers with `"ok"` status. A search with no usable
+    offers returns `"empty"`, so hotels retain the full budget.
 - **`hotel_search`**: the stay dates (from the cheapest shortlisted flight, else trends'
   first candidate dates, else the trip's own dates), rooms (one per 2 travelers) and
   the hotel budget (budget minus `cheapest_total`). With no stay length (no
@@ -381,10 +422,9 @@ The separate service heuristic `straight_line_km * 1.3 / 80` gives approximate
 driving hours; `RouteOption` has no driving-time field, so the node does not extend
 the contract or report ground-transport costs.
 
-`flight_search.py`, `hotel_search.py`, `state.py` and their existing schemas remain
-unchanged. The current flight-search stub accepts state containing the result but
-does not yet execute airport/date searches. Contract tests cover its compatibility;
-they do not claim live Duffel searches. The existing `hotel_search.stay_dates`
+Issue #34 left the flight-search node as a compatible stub. Issue #35 now executes
+airport/date searches using the trend result as input; see [flights.md](flights.md).
+The existing `hotel_search.stay_dates`
 consumes the first candidate from an `ok` trend result, unless concrete flight
 results take precedence. Candidate dates are ISO strings; one-way null returns
 remain compatible with the hotel's existing no-stay behavior.
@@ -444,3 +484,19 @@ JFK, HPN, ISP, SWF at arrival. The exact January 15–22 pair was retained, and 
 home flight estimate was $1,375.79 with `fits: true` against $2,000. The output
 passed `assert_contract`, preserved the input state and left both data hashes
 unchanged. The JSON includes all four chart quarters and raw service diagnostics.
+
+## Refreshing a selected flight offer (Issue #35)
+
+`services.flight_service.refresh_offer(offer_id, travelers, *, from_alternative_airport=False)`
+fetches one offer's current details with `GET /air/offers/{offer_id}` through the
+same guarded Duffel client. Pass the original traveler count so per-person pricing
+is calculated correctly, and the original alternative-airport flag when applicable.
+It returns a newly parsed `FlightOffer` with the latest total, expiry, itinerary and
+baggage metrics. Selection tags start empty because updated prices require reranking.
+
+Each invocation with valid inputs makes one counted HTTP attempt, with no automatic
+retry. Invalid inputs raise `ValueError` before a request. Missing credentials or an
+already-reached daily limit block the request before an HTTP attempt is counted.
+Unavailable, expired, non-USD, partial or malformed offers raise
+`DuffelError`. This is an explicit service helper; page reloads and graph execution
+do not invoke it automatically.
