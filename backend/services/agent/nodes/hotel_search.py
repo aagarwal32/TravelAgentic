@@ -9,12 +9,13 @@ The search and the picks (search_hotels_with_prices, then the shortlist) are the
 until then the result is "empty" with these inputs filled in.
 """
 from datetime import date, timedelta
-from math import ceil
+from math import ceil 
 from typing import Optional
 
 from services.agent.state import (FlightOffers, FlightTrends, HotelOptions, TripConstraints,
                                   TripState, empty_result)
 
+# Room planning default: change this if the itinerary should share rooms differently.
 PEOPLE_PER_ROOM = 2
 
 

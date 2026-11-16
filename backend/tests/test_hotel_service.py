@@ -17,7 +17,7 @@ CHECKIN, CHECKOUT = date(2026, 11, 18), date(2026, 11, 21)
 def fixture(name):
     return json.loads((FIXTURES / f"{name}.json").read_text(encoding="utf-8"))
 
-
+# completely vibed - run/alter the tests to see if the amenities pull up for a wide variety of states, new tests check radius widening
 class HotelServiceTests(unittest.TestCase):
     def setUp(self):
         self.transport = patch("services.liteapi_client.httpx.request", side_effect=AssertionError("Network forbidden in unit tests"))
@@ -251,6 +251,52 @@ class HotelServiceTests(unittest.TestCase):
         self.assertTrue(result[0]["sandbox"])
         self.assertEqual(rates.call_args.args[-2:], (3, 2))
         self.assertEqual(search.call_args.kwargs["radius_m"], 5000)
+
+    def test_mode_search_stops_at_first_radius_when_enough_hotels_fit(self):
+        candidates = [{"id": f"h{i}", "latitude": 0, "longitude": 0} for i in range(5)]
+        rates = [{"hotelId": hotel["id"], "price": 300} for hotel in candidates]
+        self.request.side_effect = [{"data": candidates}, {"data": rates}]
+
+        found = hotels.search_hotels_with_prices(
+            {"latitude": 0, "longitude": 0}, CHECKIN, CHECKOUT, 2, mode="fly", max_total=300,
+        )
+
+        self.assertEqual(len(found), 5)
+        self.assertEqual(self.request.call_count, 2)
+        self.assertEqual(self.request.call_args_list[0].kwargs["params"]["radius"], 10_000)
+
+    def test_widening_uses_configured_distances_and_quotes_only_new_candidates(self):
+        self.request.side_effect = [
+            {"data": [{"id": "outside-budget", "latitude": 0, "longitude": 0}]},
+            {"data": [{"hotelId": "outside-budget", "price": 400}]},
+            {"data": [{"id": "outside-budget", "latitude": 0, "longitude": 0},
+                      {"id": "affordable", "latitude": 0.1, "longitude": 0},
+                      {"id": "beyond-price-cap", "latitude": 0.105, "longitude": 0}]},
+            {"data": [{"hotelId": "affordable", "price": 250}]},
+        ]
+        with patch.object(hotels, "RADIUS_STEPS_KM", {"drive": (7, 12, 18)}), \
+             patch.object(hotels, "MIN_AFFORDABLE_HOTELS", 1), \
+             patch.object(hotels, "WIDENING_HOTEL_LIST_LIMIT", 8), \
+             patch.object(hotels, "PRICE_CANDIDATE_LIMIT", 1):
+            found = hotels.search_hotels_with_prices(
+                {"latitude": 0, "longitude": 0}, CHECKIN, CHECKOUT, 2, mode="drive", max_total=300,
+            )
+
+        self.assertEqual([hotel["hotel_id"] for hotel in found], ["affordable"])
+        self.assertEqual(self.request.call_count, 4)
+        self.assertEqual([call.kwargs["params"]["radius"] for call in self.request.call_args_list[::2]],
+                         [7_000, 12_000])
+        self.assertEqual(self.request.call_args_list[2].kwargs["params"]["limit"], 8)
+        self.assertEqual(self.request.call_args_list[3].kwargs["json"]["hotelIds"], ["affordable"])
+
+    def test_explicit_radius_overrides_widening_even_when_no_hotels_fit(self):
+        self.request.return_value = {"data": []}
+        result = hotels.search_hotels_with_prices(
+            {"latitude": 0, "longitude": 0}, CHECKIN, CHECKOUT, 2, mode="drive", radius_m=12_000,
+        )
+        self.assertEqual(result, [])
+        self.request.assert_called_once()
+        self.assertEqual(self.request.call_args.kwargs["params"]["radius"], 12_000)
 
     def test_combined_search_uses_resolved_place_coordinates(self):
         place = Place(id="us-co-denver", city="Denver", state="CO", latitude=39.7392, longitude=-104.9847,
