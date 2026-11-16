@@ -26,6 +26,9 @@ def ask_optional(state: TripState) -> dict:
     c = TripConstraints(**state["constraints"])
     skipped = list(state.get("skipped", []))
     fields = [f for f in OPTIONAL if getattr(c, f) is None and f not in skipped]
+    if c.hotel_amenities and "hotel_preferences" in fields:
+        # The first trip message may already have answered the hotel question.
+        fields.remove("hotel_preferences")
     if c.mode == "drive":
         fields = [f for f in fields if f != "max_connections"]
     if not fields:

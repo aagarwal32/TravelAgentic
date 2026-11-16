@@ -168,6 +168,10 @@ def extract(state: TripState) -> dict:
                 understood = ("value" in a or a.get("rejected")
                               or ANSWER_KEYS.get(field, {field}) & ai.keys())
                 field_error = ERROR_TEXT[field] if understood else COULD_NOT_UNDERSTAND
+        elif field == "hotel_preferences" and merged.hotel_amenities:
+            # This card can be answered entirely by the structured field.
+            if field in skipped:
+                skipped.remove(field)
         elif getattr(merged, field) is None and field not in skipped:
             skipped.append(field)
     if not_found:

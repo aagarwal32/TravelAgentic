@@ -6,6 +6,14 @@ from pydantic import BaseModel, Field, model_validator, field_validator, ConfigD
 # How long a round trip can be, whether the user gives nights or a return date
 TRIP_NIGHTS_MIN, TRIP_NIGHTS_MAX = 1, 30
 
+# Provides amenity tags; list subject to change
+AMENITY_TAGS = [
+    "wifi", "air conditioning", "24-hour front desk", "laundry",
+    "parking", "airport shuttle", "ev charging", "breakfast", "kitchen",
+    "restaurant", "bar", "pool", "gym", "hot tub", "spa", "pet friendly",
+    "accessible", "non-smoking", "family rooms", "luggage storage",
+]
+
 
 class Place(BaseModel):
     """One exact US place that a typed city resolved to (services/location_service.py).
@@ -49,6 +57,17 @@ class TripConstraints(BaseModel):
     max_connections: Optional[int] = Field(None, ge=0, le=2)
     activities: Optional[list[str]] = None
     hotel_preferences: Optional[str] = None
+    hotel_amenities: Optional[list[str]] = None
+
+    @field_validator("hotel_amenities", mode="before")
+    @classmethod
+    def normalize_amenities(cls, value) -> Optional[list[str]]:
+        if value is None:
+            return None
+        if not isinstance(value, list):
+            raise ValueError("hotel_amenities must be a list")
+        tags = (item.strip().lower() for item in value if isinstance(item, str))
+        return list(dict.fromkeys(tag for tag in tags if tag in AMENITY_TAGS)) or None
 
     @field_validator("origin", "destination", "hotel_preferences")
     @classmethod

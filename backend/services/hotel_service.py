@@ -9,7 +9,7 @@ from datetime import date, datetime, timezone
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from math import asin, cos, isfinite, radians, sin, sqrt
 import re
-from typing import TYPE_CHECKING, Optional, Union
+from typing import TYPE_CHECKING, Literal, Optional, Union
 from urllib.parse import quote
 
 from core.config import settings
@@ -17,6 +17,27 @@ from services.liteapi_client import LiteAPIError, _request
 
 if TYPE_CHECKING:
     from services.agent.state import Place
+
+
+# Hotel search tuning: edit these defaults to change search breadth and cost.
+# Searches without a travel mode make one pass at this distance.
+DEFAULT_RADIUS_KM = 5
+# These are total radii, not increments. Keep each mode's sequence increasing.
+# Example: (10, 15, 20) widens by 5 km at each step after the first search.
+RADIUS_STEPS_KM = {"fly": (10, 20, 40), "drive": (25, 40)}
+# Stop widening after this many unique hotels have a quote within the stay budget.
+MIN_AFFORDABLE_HOTELS = 5
+# Maximum candidate hotels to list when making a single pass.
+HOTEL_LIST_LIMIT = 50
+# List extra candidates for widening so later passes can reach hotels not yet quoted.
+WIDENING_HOTEL_LIST_LIMIT = 150
+# Maximum hotels to quote in one rates request. Check LiteAPI's cap before raising it.
+PRICE_CANDIDATE_LIMIT = 50
+
+# Provider limits and unit conversion, separate from the product settings above.
+METERS_PER_KM = 1_000
+LITEAPI_MIN_SEARCH_RADIUS_M = 1_000  # Smaller requested radii are enforced locally.
+LITEAPI_MAX_LIST_LIMIT = 5_000       # Upper bound accepted by the hotel's list endpoint.
 
 
 def _positive_int(value: int, name: str, maximum: Optional[int] = None) -> int:
@@ -177,9 +198,9 @@ def get_city_location(city: str, state: Optional[str] = None) -> Optional[dict]:
 
 
 def search_hotels_near(
-    latitude: float, longitude: float, radius_m: int = 5000,
+    latitude: float, longitude: float, radius_m: int = DEFAULT_RADIUS_KM * METERS_PER_KM,
     min_rating: Optional[float] = None, facility_ids: Optional[list[int]] = None,
-    limit: int = 50,
+    limit: int = HOTEL_LIST_LIMIT,
 ) -> list[dict]:
     """Return up to limit US hotel candidates inside radius_m, sorted by distance in km.
 
@@ -189,14 +210,14 @@ def search_hotels_near(
     """
     lat, lon = _coordinates(latitude, longitude)
     _positive_int(radius_m, "radius_m")
-    _positive_int(limit, "limit", 5000)
+    _positive_int(limit, "limit", LITEAPI_MAX_LIST_LIMIT)
     params = {"countryCode": "US", "latitude": lat, "longitude": lon,
-              "radius": max(radius_m, 1000), "limit": limit}
+              "radius": max(radius_m, LITEAPI_MIN_SEARCH_RADIUS_M), "limit": limit}
     if min_rating is not None:
         rating = _number(min_rating)
         if rating is None or not 0 <= rating <= 10:
             raise ValueError("min_rating must be between 0 and 10")
-        params["minRating"] = rating
+        params["minRating"] = rating 
     if facility_ids:
         for facility_id in facility_ids:
             _positive_int(facility_id, "facility_id")
@@ -211,7 +232,7 @@ def search_hotels_near(
             continue  # A missing location cannot satisfy a geographic filter.
         distance = _distance_km(lat, lon, hotel_lat, hotel_lon)
         # LiteAPI's minimum is 1000 m; retain the user's smaller radius locally.
-        if distance * 1000 > radius_m:
+        if distance * METERS_PER_KM > radius_m:
             continue
         hotels.append({"hotel_id": hotel["id"], "name": hotel.get("name"),
                        "address": hotel.get("address"), "stars": hotel.get("stars"),
@@ -374,19 +395,28 @@ def get_review_summary(hotel_id: str, limit: int = 20) -> dict:
 
 def search_hotels_with_prices(
     city: Union[str, "Place", dict], checkin: date, checkout: date, adults: int, rooms: int = 1,
-    radius_m: int = 5000, max_total: Optional[float] = None,
+    radius_m: Optional[int] = None, max_total: Optional[float] = None,
+    *, mode: Optional[Literal["fly", "drive"]] = None,
 ) -> list[dict]:
-    """Return priced US hotel candidates within radius_m, sorted by total USD.
+    """Return priced US hotel candidates, sorted by total USD.
 
     city is the trip's resolved place (TripConstraints.destination_place, as a Place or
     the dict saved in the graph state): its coordinates are searched directly, so the hotels are around the same city that
     fare trends and flights use, with no extra LiteAPI calls. A city name still
     works for testing by hand; it is looked up with get_city_location (1-6 calls).
+    Pass mode to widen through its radius sequence if too few hotels fit.
+    An explicit radius_m always means one pass; omitting both uses the default
+    radius. Each pass makes one list call and at most one minimum-rates call.
     max_total applies to the entire stay and every room, not per person/night.
-    Uses hotel list -> minimum rates; no booking or agent wiring.
     """
     _stay_payload(checkin, checkout, adults, rooms)
-    _positive_int(radius_m, "radius_m")
+    if mode is not None and mode not in RADIUS_STEPS_KM:
+        raise ValueError("mode must be 'fly' or 'drive'")
+    if radius_m is not None:
+        radii = (_positive_int(radius_m, "radius_m"),)
+    else:
+        steps_km = (DEFAULT_RADIUS_KM,) if mode is None else RADIUS_STEPS_KM[mode]
+        radii = tuple(km * METERS_PER_KM for km in steps_km)
     budget = _money(max_total) if max_total is not None else None
     if max_total is not None and budget is None:
         raise ValueError("max_total must be a finite nonnegative USD amount")
@@ -399,10 +429,22 @@ def search_hotels_with_prices(
         latitude, longitude = city.get("latitude"), city.get("longitude")
     else:  # a Place; search_hotels_near rejects anything without valid coordinates
         latitude, longitude = getattr(city, "latitude", None), getattr(city, "longitude", None)
-    hotels = search_hotels_near(latitude, longitude, radius_m=radius_m)
-    if not hotels:
-        return []
-    by_id = {hotel["hotel_id"]: hotel for hotel in hotels}
-    rates = get_cheapest_rates(list(by_id), checkin, checkout, adults, rooms)
-    return [{**by_id[rate["hotel_id"]], **rate} for rate in rates
-            if rate["hotel_id"] in by_id and (budget is None or Decimal(str(rate["total_price"])) <= budget)]
+    affordable = []
+    considered = set()
+    list_options = {"limit": WIDENING_HOTEL_LIST_LIMIT} if len(radii) > 1 else {}
+    for search_radius in radii:
+        nearby = search_hotels_near(latitude, longitude, radius_m=search_radius, **list_options)
+        # Skip hotels already sent for quotes: wider circles include the inner ones.
+        # Price the closest new candidates first; nearby results are in distance order.
+        new_hotels = {hotel["hotel_id"]: hotel for hotel in nearby if hotel["hotel_id"] not in considered}
+        by_id = dict(list(new_hotels.items())[:PRICE_CANDIDATE_LIMIT])
+        if not by_id:
+            continue
+        considered.update(by_id)
+        for rate in get_cheapest_rates(list(by_id), checkin, checkout, adults, rooms):
+            hotel_id = rate["hotel_id"]
+            if hotel_id in by_id and (budget is None or Decimal(str(rate["total_price"])) <= budget):
+                affordable.append({**by_id[hotel_id], **rate})
+        if len(affordable) >= MIN_AFFORDABLE_HOTELS:
+            break
+    return sorted(affordable, key=lambda hotel: hotel["total_price"])

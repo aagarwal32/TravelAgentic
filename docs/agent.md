@@ -39,6 +39,24 @@ first request ─► extract ─┬─ required detail missing → clarify      
 | Which place ("Which Greenville?") | buttons, **or** typed text (see [Places](#places-origin-and-destination)) |
 | Origin, destination, activities, hotel | typed text |
 
+## Hotel preferences and amenities
+
+The existing hotel card can fill two fields in one extraction call. For example,
+"free parking, wifi, my dog is coming, near downtown" saves:
+
+```json
+{"hotel_amenities": ["parking", "wifi", "pet friendly"],
+ "hotel_preferences": "near downtown"}
+```
+
+Intake accepts only the tags in `AMENITY_TAGS`, lowercases them and removes
+duplicates. If no valid tags remain, `hotel_amenities` is `null`. Other wishes,
+including features without a matching tag, stay in `hotel_preferences`.
+There is no separate amenities card, and an amenities-only answer completes the
+hotel card. Tags describe general features: for example, the `parking` tag
+does not guarantee that parking is free. The live search and provider mapping
+are separate from intake.
+
 ## AI model
 
 The agent uses Claude through the Anthropic API (`services/agent/llm.py`). Add these
