@@ -143,7 +143,7 @@ def compute_missing(c: TripConstraints) -> list[str]:
 #   other keys are always present when "ok"; they may be missing otherwise.
 # - A node must still work when the node before it has no result (missing,
 #   "skipped" or "empty"):
-#     flights without trends: search the places' own airports on the trip's dates
+#     flights without trends: search each place's own airport on the trip's dates
 #     hotels without flights: the full budget, and dates from the trip itself
 # - Prices come only from data (DOT Table 6, Duffel, LiteAPI), never from the AI.
 #   Live results carry "fetched_at" (UTC, ISO 8601).

@@ -100,11 +100,11 @@ class FlightSearchTests(unittest.TestCase):
         self.assertEqual(self.search.call_args.kwargs["max_connections"], 0)
 
     def test_trends_airports_are_deduplicated_and_alternatives_are_marked(self):
-        trip = {**TRIP, "origin_place": {**TRIP["origin_place"], "airports": ["ORD", "MDW"]}}
         trends = {"status": "ok", "search_airports": {
             "origin": [" ord ", "ORD", "MDW", "MKE"], "destination": ["JFK", "EWR", "EWR"],
-        }}
-        result = self.run_node(trip, flight_trends=trends)
+        }, "options": [{"side": "departure", "airports": ["MKE"]},
+                       {"side": "arrival", "airports": ["EWR"]}]}
+        result = self.run_node(TRIP, flight_trends=trends)
         self.assertEqual(result["searches_made"], 6)
         pairs = {(item.args[0], item.args[1]): item.kwargs["from_alternative_airport"]
                  for item in self.search.call_args_list}
@@ -114,8 +114,9 @@ class FlightSearchTests(unittest.TestCase):
 
     def test_per_trip_cap_keeps_home_dates_first_and_preserves_an_alternative(self):
         trends = {"status": "ok", "search_airports": {
-            "origin": ["MKE", "ORD"], "destination": ["EWR", "JFK"],
-        }}
+            "origin": ["ORD", "MKE"], "destination": ["JFK", "EWR"],
+        }, "options": [{"side": "departure", "airports": ["MKE"]},
+                       {"side": "arrival", "airports": ["EWR"]}]}
         for offers, expected_status in (([], "empty"), ([self.offer], "ok")):
             with self.subTest(status=expected_status):
                 self.search.reset_mock()
@@ -162,34 +163,34 @@ class FlightSearchTests(unittest.TestCase):
         self.assertEqual([item.args[2].day for item in followups], [16, 18, 15])
         self.assertTrue(all((item.kwargs["return_date"] - item.args[2]).days == 2 for item in followups))
 
-    def test_home_route_is_retained_when_trends_only_lists_alternatives(self):
-        result = self.run_node(TRIP, flight_trends={"status": "ok", "search_airports": {
-            "origin": ["MKE"], "destination": ["EWR"],
-        }})
-        self.assertEqual(result["searches_made"], 4)
-        self.assertEqual([(item.args[0], item.args[1]) for item in self.search.call_args_list], [
-            ("ORD", "JFK"), ("ORD", "EWR"), ("MKE", "JFK"), ("MKE", "EWR"),
-        ])
-        self.assertFalse(self.search.call_args_list[0].kwargs["from_alternative_airport"])
-        self.assertTrue(all(item.kwargs["from_alternative_airport"]
-                            for item in self.search.call_args_list[1:]))
+    def test_only_trends_airports_are_searched(self):
+        # Nearby airports that trends left out (e.g. a near miss like DEN) are never added
+        trip = {**TRIP, "origin_place": {**TRIP["origin_place"], "airports": ["ORD", "MDW"],
+                                        "flight_airports": ["ORD", "MDW"]}}
+        result = self.run_node(trip, flight_trends={"status": "ok", "search_airports": {
+            "origin": ["ORD"], "destination": ["JFK"]}, "options": []})
+        self.assertEqual(result["searches_made"], 1)
+        self.search.assert_called_once()
+        self.assertEqual(self.search.call_args.args[:2], ("ORD", "JFK"))
+        self.assertFalse(self.search.call_args.kwargs["from_alternative_airport"])
 
-    def test_fallback_airport_lists_are_also_subject_to_per_trip_cap(self):
+    def test_fallback_without_trends_searches_only_each_places_own_airport(self):
         trip = {**WINDOW_TRIP,
-                "origin_place": {**TRIP["origin_place"], "airports": ["ORD", "MDW", "MKE"]},
-                "destination_place": {**TRIP["destination_place"], "airports": ["JFK", "LGA", "EWR"]}}
-        result = self.run_node(trip)
-        self.assertEqual(result["searches_made"], 6)
-        self.assertEqual(self.search.call_count, 6)
+                "origin_place": {**TRIP["origin_place"], "airports": ["ORD", "MDW", "MKE"],
+                                 "flight_airports": ["ORD", "MDW", "MKE"]},
+                "destination_place": {**TRIP["destination_place"], "airports": ["JFK", "LGA", "EWR"],
+                                      "flight_airports": ["JFK", "LGA", "EWR"]}}
+        result = self.run_node(trip, flight_trends={"status": "empty", "reason": "no data"})
+        self.assertEqual(result["searches_made"], 3)  # the 3 date probes, no follow-ups without fares
+        self.assertEqual({item.args[:2] for item in self.search.call_args_list}, {("ORD", "JFK")})
         self.assertTrue(all(not item.kwargs["from_alternative_airport"]
                             for item in self.search.call_args_list))
 
     def test_fixed_dates_try_trends_alternative_before_home_pairs_fill_budget(self):
-        trip = {**TRIP,
-                "origin_place": {**TRIP["origin_place"], "airports": ["ORD", "MDW", "MKE"]},
-                "destination_place": {**TRIP["destination_place"], "airports": ["JFK", "LGA", "EWR"]}}
-        trends = {"status": "ok", "search_airports": {"origin": ["MSN"]}}
-        result = self.run_node(trip, flight_trends=trends)
+        trends = {"status": "ok", "search_airports": {
+            "origin": ["ORD", "MDW", "MSN"], "destination": ["JFK", "LGA", "EWR"],
+        }, "options": [{"side": "departure", "airports": ["MSN"]}]}
+        result = self.run_node(TRIP, flight_trends=trends)
         self.assertEqual(result["searches_made"], MAX_SEARCHES_PER_TRIP)
         self.assertEqual([item.args[:2] for item in self.search.call_args_list[:2]],
                          [("ORD", "JFK"), ("MSN", "JFK")])
@@ -206,10 +207,9 @@ class FlightSearchTests(unittest.TestCase):
         self.assertIn("daily search limit", result["reason"])
 
     def test_duplicates_and_same_airport_pairs_do_not_consume_search_budget(self):
-        trip = {**TRIP,
-                "origin_place": {**TRIP["origin_place"], "airports": ["ORD", "ORD", "MDW", "JFK"]},
-                "destination_place": {**TRIP["destination_place"], "airports": ["ORD", "JFK", "EWR", "EWR"]}}
-        result = self.run_node(trip)
+        trends = {"status": "ok", "search_airports": {
+            "origin": ["ORD", "ORD", "MDW", "JFK"], "destination": ["ORD", "JFK", "EWR", "EWR"]}}
+        result = self.run_node(TRIP, flight_trends=trends)
         pairs = [(item.args[0], item.args[1]) for item in self.search.call_args_list]
         self.assertEqual(result["searches_made"], 6)
         self.assertEqual(len(pairs), 6)

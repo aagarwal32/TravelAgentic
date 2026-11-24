@@ -188,8 +188,9 @@ search retain the planning contracts described below.
   closest airport can be a general-aviation field that DOT puts in no market (Meacham,
   FTW, for Fort Worth; BJC for Denver), so it is skipped for the market but still
   listed in `airports`.
-  `flight_airports` keeps the subset with a DOT market for Duffel searches. Older
-  saved places without that field still use their saved airport list.
+  `flight_airports` keeps the subset with a DOT market, closest first. Flight search
+  uses only its first entry (the place's own airport) when flight trends has no
+  airports; older saved places without that field use the first saved airport.
   This deliberately differs from Issue #21's literal closest-airport rule. Approval
   of this interpretation is still required; the behavior is preserved in this change.
 - Only code fills `*_place`. The AI never sees or sets them, and changing the city text
@@ -280,7 +281,7 @@ tests also assert every successful payload field and its nested contract.
   e.g. flights on a driving trip) or `"empty"` (it ran and found nothing), plus a
   `reason` when it isn't `"ok"`. An `"ok"` result has every key of its contract.
 - **Fallbacks:** each node works without the result before it.
-  - Flights without trends use the places' own eligible airports and trip dates.
+  - Flights without trends search each place's own airport on the trip's dates.
   - Hotels without flights: the full budget, and dates from the trip.
 - **Data only:** prices come from Table 6, Duffel or LiteAPI, never from the AI. Live
   results have `fetched_at`. Dates are ISO strings and money is USD.
@@ -311,8 +312,10 @@ tests also assert every successful payload field and its nested contract.
 - **`flight_trends`**: the places' DOT markets and coordinates, the dates, budget and
   travelers. It tells flights where and when to search (`search_airports`,
   `candidate_dates`).
-- **`flight_search`**: `search_airports` and `candidate_dates` (fallback: the places'
-  airports and the trip's dates), travelers and `max_connections`. All Duffel calls
+- **`flight_search`**: `search_airports` and `candidate_dates` (fallback: each place's
+  own airport and the trip's dates), travelers and `max_connections`. It searches only
+  the airports trends lists (trends decides; flight search orders the searches), and
+  marks an offer `from_alternative_airport` when its airport is in a trends option. All Duffel calls
   go through one guarded client limited by `DUFFEL_DAILY_SEARCH_LIMIT`. It writes
   up to 20 shortlisted offers with measured `metrics` and `cheapest_total`.
   See [flights.md](flights.md) for setup, ranking and a test-mode run.

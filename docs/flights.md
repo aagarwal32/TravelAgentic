@@ -13,8 +13,8 @@ usable USD offers cheapest first, and calculates connection and baggage metrics.
 caller can confirm its fare, expiry and baggage before displaying it. Duffel may
 change the fare or provide additional details on refresh. [Get a single offer](https://duffel.com/docs/api/v2/offers#get-a-single-offer)
 
-Duffel accepts airport and city IATA codes. The planner uses airport codes from
-resolved places and trends to honor their airport lists. A flat offer request
+Duffel accepts airport and city IATA codes. The planner uses the airport codes
+flight trends lists (or each place's own airport when trends has none). A flat offer request
 returns all offers in one call, which can be hundreds or thousands across
 airlines. Duffel also supports a grouped itineraries response and paginated
 listing. The flat response keeps the existing parser and one counted HTTP call

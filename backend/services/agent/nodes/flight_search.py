@@ -43,20 +43,24 @@ def flight_search(state: TripState) -> dict:
     suggested = trends.get("search_airports") or {}
     if not isinstance(suggested, dict):
         suggested = {}
+    # Trends chooses which airports to search; flight search only orders the searches.
+    # Its options name the alternative airports for each side.
+    alternatives = {"origin": set(), "destination": set()}
+    for option in trends.get("options") or []:
+        side = {"departure": "origin", "arrival": "destination"}.get(option.get("side"))
+        if side:
+            alternatives[side].update(str(code).strip().upper() for code in option.get("airports") or [])
     airports, home_airports = {}, {}
     for side, place in (("origin", c.origin_place), ("destination", c.destination_place)):
-        available = place.flight_airports if place.flight_airports is not None else place.airports
-        home = [code.strip().upper() for code in available
-                if re.fullmatch(r"[A-Z]{3}", code.strip().upper())]
-        home_airports[side] = set(home)
-        excluded = {code.strip().upper() for code in place.airports} - home_airports[side]
         codes = suggested.get(side)
-        if not isinstance(codes, list):
-            codes = []
+        if not isinstance(codes, list) or not codes:
+            # Without trends: the place's own airport only, the closest one with a DOT
+            # market (flight_airports is closest first). Older saved places lack it.
+            codes = (place.flight_airports if place.flight_airports is not None else place.airports)[:1]
         selected = [code.strip().upper() for code in codes
                     if isinstance(code, str) and re.fullmatch(r"[A-Z]{3}", code.strip().upper())]
-        # Keep the home route available even when trends lists only alternatives.
-        airports[side] = list(dict.fromkeys(home + [code for code in selected if code not in excluded]))
+        airports[side] = list(dict.fromkeys(selected))
+        home_airports[side] = set(airports[side]) - alternatives[side]
     if not airports["origin"] or not airports["destination"]:
         result["reason"] = "no usable origin or destination airports"
         return {"flight_offers": result}
