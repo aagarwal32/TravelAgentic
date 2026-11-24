@@ -21,6 +21,7 @@ class Place(BaseModel):
     longitude: float
     airports: list[str]        # nearby airports with scheduled flights, closest first: ["GSP"]
     dot_market_id: Optional[int] = None   # DOT Table 6 market of the closest airport that has one
+    flight_airports: Optional[list[str]] = None  # Nearby airports with a DOT market, closest first.
 
 
 class TripConstraints(BaseModel):
@@ -142,7 +143,7 @@ def compute_missing(c: TripConstraints) -> list[str]:
 #   other keys are always present when "ok"; they may be missing otherwise.
 # - A node must still work when the node before it has no result (missing,
 #   "skipped" or "empty"):
-#     flights without trends: search the places' own airports on the trip's dates
+#     flights without trends: search each place's own airport on the trip's dates
 #     hotels without flights: the full budget, and dates from the trip itself
 # - Prices come only from data (DOT Table 6, Duffel, LiteAPI), never from the AI.
 #   Live results carry "fetched_at" (UTC, ISO 8601).
@@ -255,19 +256,33 @@ class FlightOffer(TypedDict):
     currency: str
     expires_at: str                  # Duffel offers expire (~30 min); never show after this
     from_alternative_airport: bool
-    tags: list[str]                  # why it's shortlisted: "cheapest", "fastest", "best_balance", "alternative_airport"
+    tags: list[str]                  # why it's shortlisted: "cheapest", "fastest", "best_balance",
+                                     # "alternative_airport", "home_airport" (best home offer when alternatives exist)
     outbound: FlightSlice
     inbound: Optional[FlightSlice]   # None for one-way
     metrics: FlightMetrics
 
 
+class FlightSearchLog(TypedDict):
+    # One Duffel search, so "no flights on this route" is visible next to the shortlist
+    origin: str
+    destination: str
+    depart_date: str
+    return_date: Optional[str]       # None for one-way
+    offers: int                      # usable offers it returned (0 when it failed)
+    cheapest_total: Optional[float]
+    error: Optional[str]             # the failure, without secrets; None when it worked
+
+
 class FlightOffers(TypedDict):
     status: ResultStatus
     reason: NotRequired[str]
-    searches_made: NotRequired[int]          # Duffel searches this node made
+    searches_made: NotRequired[int]          # guarded search attempts, including failed/blocked calls
+    searches: NotRequired[list[FlightSearchLog]]   # one entry per attempt, in search order
     fetched_at: NotRequired[str]
     cheapest_total: NotRequired[Optional[float]]   # hotel_search subtracts it from the budget
-    shortlist: NotRequired[list[FlightOffer]]      # about 5, chosen in code
+    shortlist: NotRequired[list[FlightOffer]]      # up to 20, chosen in code; every searched
+                                                   # airport pair keeps its cheapest offer
 
 
 class HotelPick(TypedDict):
