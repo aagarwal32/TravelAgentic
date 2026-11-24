@@ -122,18 +122,18 @@ class TripLoopTests(unittest.TestCase):
         card = self.answer({'value': '2099-01-01'})
         self.assertIsNone(card['error'])  # the old error is cleared
 
-    def test_depart_range_sets_window_and_asks_for_return_date(self):
+    def test_depart_range_sets_window_and_asks_for_nights(self):
         self.start({k: v for k, v in COMPLETE.items() if k not in ('depart_date', 'return_date')})
         self.ai.reset_mock()
         card = self.answer({'value': {'start': '2099-03-01', 'end': '2099-03-31'}})
         self.assertEqual(self.constraints()['flexible_start'], '2099-03-01')
         self.assertEqual(self.constraints()['flexible_end'], '2099-03-31')
         self.assertIsNone(self.constraints()['depart_date'])
-        self.assertEqual(card['card']['field'], 'return_date')
-        self.assertEqual(card['card']['min'], '2099-03-01')
-        stack = self.answer({'value': '2099-03-15'})
+        self.assertEqual(card['card']['field'], 'trip_nights')
+        stack = self.answer({'value': 4})
         self.assertEqual(stack['type'], 'optional_cards')
-        self.assertEqual(self.constraints()['return_date'], '2099-03-15')
+        self.assertEqual(self.constraints()['trip_nights'], 4)
+        self.assertIsNone(self.constraints()['return_date'])
         self.ai.assert_not_called()  # picker answers never need AI extraction
 
     def test_backwards_range_shows_range_error(self):
@@ -197,8 +197,7 @@ class TripLoopTests(unittest.TestCase):
         self.start(partial)
         card = self.answer({'text': 'early january'},
                            ai_patch={'flexible_start': '2099-01-01', 'flexible_end': '2099-01-10'})
-        self.assertEqual(card['card']['field'], 'return_date')
-        self.assertEqual(card['card']['min'], '2099-01-01')
+        self.assertEqual(card['card']['field'], 'trip_nights')  # a window asks for nights
 
     def test_wrong_kind_in_optional_stack_counts_as_skipped(self):
         self.start(COMPLETE)
@@ -281,8 +280,8 @@ class TripLoopTests(unittest.TestCase):
             self.assertIn(field, QUESTIONS, field)
             self.assertIn(field, ERROR_TEXT, field)
 
-    def test_flexible_round_trip_prefers_return_date_when_both_are_missing(self):
-        self.assertEqual(date_missing(TripConstraints(**FLEXIBLE)), ['return_date'])
+    def test_flexible_round_trip_asks_nights_when_both_are_missing(self):
+        self.assertEqual(date_missing(TripConstraints(**FLEXIBLE)), ['trip_nights'])
 
     # AI responses below are mocked. These exercise Python validation and routing,
     # not whether a live model understands the user's wording.
@@ -305,20 +304,19 @@ class TripLoopTests(unittest.TestCase):
         self.assertEqual(seen, ['mode', 'trip_type', 'budget', 'travelers'])  # no return or nights card
         self.assertEqual(self.ai.call_count, 1)
 
-    def test_flexible_round_trip_without_return_or_nights_asks_return_card(self):
+    def test_flexible_round_trip_without_return_or_nights_asks_nights_card(self):
         self.assertEqual(self.start(FLEXIBLE), {
             'type': 'required_question',
-            'card': {'field': 'return_date', 'text': 'When do you want to come back?',
-                     'input': 'date', 'min': '2099-03-01'},
+            'card': {'field': 'trip_nights', 'text': 'How many nights do you want to stay?', 'input': 'number', 'min': 1, 'max': 30},
             'error': None})
 
-    def test_window_return_picker_answer_saved_without_ai(self):
+    def test_window_nights_picker_answer_saved_without_ai(self):
         self.start(FLEXIBLE)
         self.ai.reset_mock()
-        stack = self.answer({'value': '2099-03-15'})
+        stack = self.answer({'value': 4})
         self.ai.assert_not_called()
-        self.assertEqual(self.constraints()['return_date'], '2099-03-15')
-        self.assertIsNone(self.constraints()['trip_nights'])
+        self.assertEqual(self.constraints()['trip_nights'], 4)
+        self.assertIsNone(self.constraints()['return_date'])
         self.assertEqual(stack['type'], 'optional_cards')  # intake carries on as usual
 
     def test_exact_date_with_nights_fills_return_date_without_return_card(self):
@@ -376,13 +374,13 @@ class TripLoopTests(unittest.TestCase):
                 self.new_thread(bad)
                 self.ai.reset_mock()
                 card = self.start({**FLEXIBLE, 'trip_nights': bad})
-                self.assertEqual(card['card']['field'], 'return_date')
+                self.assertEqual(card['card']['field'], 'trip_nights')
                 self.assertIsNone(self.constraints()['trip_nights'])
                 self.assertEqual(self.constraints()['origin'], COMPLETE['origin'])
                 self.assertEqual(self.constraints()['budget'], COMPLETE['budget'])
                 self.assertEqual(self.constraints()['flexible_start'], '2099-03-01')
                 self.assertEqual(self.constraints()['flexible_end'], '2099-03-31')
-                self.assertEqual(self.answer({'value': '2099-03-15'})['type'], 'optional_cards')
+                self.assertEqual(self.answer({'value': 3})['type'], 'optional_cards')
                 self.ai.assert_called_once()  # only the initial request
 
     def test_return_date_outside_1_to_30_nights_is_kept_without_nights(self):
@@ -459,22 +457,21 @@ class TripLoopTests(unittest.TestCase):
         self.assertIn('"for a week" -> 7', EXTRACT_PROMPT)
         self.assertNotIn('depart_date + 4 days', EXTRACT_PROMPT)  # the AI no longer computes return dates
 
-    def test_invalid_window_return_retries_without_ai_or_losing_details(self):
+    def test_invalid_window_nights_retry_without_ai_or_losing_details(self):
         self.start(FLEXIBLE)
         self.ai.reset_mock()
-        for invalid in ('2099-02-28', '2020-01-01', 'not-a-date'):
-            with self.subTest(return_date=invalid):
+        for invalid in (0, 31, 'four'):
+            with self.subTest(trip_nights=invalid):
                 card = self.answer({'value': invalid})
-                self.assertEqual(card['card']['field'], 'return_date')
-                self.assertEqual(card['card']['min'], '2099-03-01')
-                self.assertEqual(card['error'], ERROR_TEXT['return_date'])
-                self.assertIsNone(self.constraints()['return_date'])
+                self.assertEqual(card['card']['field'], 'trip_nights')
+                self.assertEqual(card['error'], ERROR_TEXT['trip_nights'])
+                self.assertIsNone(self.constraints()['trip_nights'])
                 self.assertEqual(self.constraints()['flexible_start'], '2099-03-01')
                 self.assertEqual(self.constraints()['flexible_end'], '2099-03-31')
                 self.assertEqual(self.constraints()['budget'], COMPLETE['budget'])
-        stack = self.answer({'value': '2099-03-15'})
+        stack = self.answer({'value': 4})
         self.assertEqual(stack['type'], 'optional_cards')
-        self.assertEqual(self.constraints()['return_date'], '2099-03-15')
+        self.assertEqual(self.constraints()['trip_nights'], 4)
         self.ai.assert_not_called()
 
     def test_supplied_nights_at_valid_limits_skip_return_question(self):
@@ -552,13 +549,29 @@ class TripLoopTests(unittest.TestCase):
 
     def test_switching_to_window_can_preserve_an_explicit_return(self):
         self.start({k: v for k, v in COMPLETE.items() if k != 'origin'})
-        stack = self.answer({'text': 'Chicago, leaving sometime in January, same return date'},
-                            ai_patch={'origin': 'Chicago', 'depart_date': None,
+        # The user restates the return, so the AI patch carries it with the window
+        stack = self.answer({'text': 'Chicago, leaving sometime in January, back January 5'},
+                            ai_patch={'origin': 'Chicago', 'depart_date': None, 'return_date': '2099-01-05',
                                       'flexible_start': '2099-01-01', 'flexible_end': '2099-01-31'})
         self.assertEqual(stack['type'], 'optional_cards')
         self.assertEqual(self.constraints()['return_date'], '2099-01-05')
         self.assertEqual(self.constraints()['trip_nights'], 4)
         self.assertIsNone(self.constraints()['depart_date'])
+
+    def test_switching_to_window_drops_the_derived_return_and_keeps_nights(self):
+        # Exact Jan 1 + 4 nights derives a Jan 5 return; "anytime in January" must not
+        # keep it, or return minus nights would pin the window to the old Jan 1 departure
+        trip = {k: v for k, v in COMPLETE.items() if k not in ('origin', 'return_date')}
+        self.start({**trip, 'trip_nights': 4})
+        self.assertEqual(self.constraints()['return_date'], '2099-01-05')
+        stack = self.answer({'text': 'Chicago, leaving anytime in January'},
+                            ai_patch={'origin': 'Chicago', 'depart_date': None,
+                                      'flexible_start': '2099-01-01', 'flexible_end': '2099-01-31'})
+        self.assertEqual(stack['type'], 'optional_cards')  # nights are known, so no card
+        self.assertIsNone(self.constraints()['depart_date'])
+        self.assertIsNone(self.constraints()['return_date'])
+        self.assertEqual(self.constraints()['trip_nights'], 4)
+        self.assertEqual(self.constraints()['flexible_end'], '2099-01-31')
 
     # Places: origin and destination are resolved once during intake
 

@@ -63,18 +63,24 @@ departure; the user can also supply a fixed return date or a number of nights.
 Any departure selected later must satisfy those details too.
 
 A round trip needs a return date or a stated stay length. If neither is known,
-intake asks for the return date, for both exact and flexible departures:
+an exact departure asks for the return date and a departure window asks for nights:
 
 | Trip | What intake needs | Card asked if missing |
 |---|---|---|
 | One-way | departure date or window | none |
 | Round trip, exact departure date | `return_date` or `trip_nights` (code fills in the other) | "When do you want to come back?" (date picker, from the departure date) |
-| Round trip, departure window | `return_date` or `trip_nights`; both are kept if supplied and compatible | "When do you want to come back?" (date picker, from the window's start) |
+| Round trip, departure window | `return_date` or `trip_nights`; both are kept if supplied and compatible | "How many nights do you want to stay?" (number, 1 to 30) |
 
-A fixed return can fall inside the departure window. "Sometime in December,
-return December 15" preserves December 1–31 and the December 15 return; it does
-not ask for nights. The return picker uses the **start**, not the end, of the
-departure window as its minimum. Its fixed answer is saved without an AI call.
+A window asks for nights, not a return date: a picked return would fix the stay to
+the whole span from the window's start to that date and cut every later departure
+out of the window. Nights keep the departure flexible and give hotels and flight
+trends a trip length. The nights card is a number box, so its answer is saved
+without an AI call; out-of-range answers show the card again with "Enter a number
+of nights from 1 to 30."
+
+A return date the user **states** is still kept. "Sometime in December, return
+December 15" preserves December 1–31 and the December 15 return; it does not ask
+for nights. A fixed return can fall inside the departure window.
 
 For this app, **"return by December 15" means the same exact return date as
 "return on December 15"**. It is not a separate latest-return deadline.
@@ -101,6 +107,9 @@ loaded. It preserves valid window/return combinations and rejects incompatible o
   inside the window, including its boundaries; the original window stays saved
 - with a window, editing nights does not erase the return date, and editing the
   return date does not erase nights; an incompatible update is rejected
+- switching from an exact date to a window drops the saved return date (it belonged
+  to the old date, often derived from it + nights) and keeps the nights, unless the
+  same answer states a return
 
 For example, a December 1–31 window with a December 15 return and 2 nights implies
 a December 13 departure. A December 2 return with 2 nights would require leaving
@@ -271,13 +280,13 @@ tests also assert every successful payload field and its nested contract.
   - Hotels without flights: the full budget, and dates from the trip.
 - **Data only:** prices come from Table 6, Duffel or LiteAPI, never from the AI. Live
   results have `fetched_at`. Dates are ISO strings and money is USD.
-- **Window → dates:** the future `flight_trends` implementation must produce
-  `candidate_dates` that satisfy the original window and the supplied return details:
+- **Window → dates:** `flight_trends` produces `candidate_dates` that satisfy the
+  original window and the supplied return details:
   - Nights only: up to 3 departures inside the window, returning `trip_nights` later.
-  - Fixed return only: up to 3 departures inside the window and no later than the
-    fixed return, all using that same return date.
+  - Fixed return only: up to 3 departures inside the window and before the fixed
+    return, all using that same return date.
   - Fixed return and nights: the single departure given by return minus nights.
-  Flights and hotels use those concrete dates. Flight nodes are still stubs.
+  Flights and hotels use those concrete dates.
 
 **What each node reads:**
 

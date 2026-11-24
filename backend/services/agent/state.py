@@ -122,9 +122,10 @@ def compute_missing(c: TripConstraints) -> list[str]:
     if not has_dates:
         missing.append("depart_date")
     if c.trip_type == "round_trip" and c.return_date is None and c.trip_nights is None:
-        # Prefer the return-date question for both exact and flexible departures.
-        # A return date or nights already supplied by the user needs no follow-up.
-        missing.append("return_date")
+        # A return date or nights the user already gave needs no follow-up. Otherwise an
+        # exact departure asks for the return date; a window (or no departure yet) asks
+        # for nights, so the departure stays flexible and later steps know the stay length
+        missing.append("return_date" if c.depart_date else "trip_nights")
     return missing
 
 # --- Planning node results ---------------------------------------------------------
@@ -147,12 +148,12 @@ def compute_missing(c: TripConstraints) -> list[str]:
 #   Live results carry "fetched_at" (UTC, ISO 8601).
 # - Dates are ISO strings ("2027-03-10") and money is USD rounded to cents, so state
 #   stays JSON-friendly like constraints.
-# - Candidate-date contract for the future flight_trends implementation (currently
-#   a stub): an exact departure has one candidate, (depart_date, return_date).
-#   A window with nights alone has up to 3 departures inside the window (in its
-#   cheapest quarter, spread out), returning depart_date + trip_nights. With a fixed
-#   return alone, candidates use that return and departures inside the window no
-#   later than it. With return and nights, only return_date - trip_nights fits.
+# - Candidate dates (flight_trends): an exact departure has one candidate,
+#   (depart_date, return_date). A window with nights alone has up to 3 departures
+#   inside the window (in its cheapest quarter, spread out), returning depart_date +
+#   trip_nights. With a fixed return alone, candidates use that return and departures
+#   inside the window before it. With return and nights, only return_date -
+#   trip_nights fits.
 #   One-way trips have return_date None.
 
 ResultStatus = Literal["ok", "skipped", "empty"]

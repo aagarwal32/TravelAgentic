@@ -15,8 +15,9 @@ QUESTIONS = {
     "trip_type":         {"text": "One-way or round trip?", "input": "choice", "options": [{"value": "one_way", "label": "One-way"}, {"value": "round_trip", "label": "Round trip"}]},
     "depart_date":       {"text": "When do you want to leave?", "input": "date_or_range", "allow_text": True},
     "return_date":       {"text": "When do you want to come back?", "input": "date"},
-    # A picked stay length is saved without an AI call. Intake prefers the return
-    # date question when neither a return date nor nights has been supplied.
+    # Asked instead of a return date when the departure is a window ("any day in
+    # December") and the user gave no return date: the trip's length is what fits a
+    # flexible departure. A number box, so the answer is saved without an AI call.
     "trip_nights":       {"text": "How many nights do you want to stay?", "input": "number", "min": TRIP_NIGHTS_MIN, "max": TRIP_NIGHTS_MAX},
     "travelers":         {"text": "How many people are traveling?", "input": "number", "min": 1, "max": 9},
     "budget":            {"text": "What's your total budget for the whole trip (everyone), in USD?", "input": "number", "min": 1},
@@ -71,9 +72,14 @@ def stale_dates(current: TripConstraints, answers: dict) -> dict:
     would win over a new "actually 6 nights" instead of being derived again from it.
     Only an exact departure needs these resets. With a departure window, return_date
     and trip_nights are separate user constraints: changing one must not erase the
-    other. Date validation checks whether they can fit together.
+    other. Date validation checks whether they can fit together. Switching from an
+    exact date to a window drops the old return date unless the same answer states one.
     """
     exact = answers.get("depart_date", current.depart_date) is not None
+    if current.depart_date is not None and not exact and "return_date" not in answers:
+        # Switching from an exact date to a window: the saved return was stated or derived
+        # for the old date, and would pin the window to it. Keep the nights.
+        return {"return_date": None}
     if "trip_nights" in answers and "return_date" not in answers and exact:
         return {"return_date": None}
     if "return_date" in answers and "trip_nights" not in answers and exact:
