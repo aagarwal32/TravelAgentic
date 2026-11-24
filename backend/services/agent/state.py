@@ -21,7 +21,6 @@ class Place(BaseModel):
     longitude: float
     airports: list[str]        # nearby airports with scheduled flights, closest first: ["GSP"]
     dot_market_id: Optional[int] = None   # DOT Table 6 market of the closest airport that has one
-    flight_airports: Optional[list[str]] = None  # Nearby airports with a DOT market, closest first.
 
 
 class TripConstraints(BaseModel):
@@ -264,10 +263,10 @@ class FlightOffer(TypedDict):
 class FlightOffers(TypedDict):
     status: ResultStatus
     reason: NotRequired[str]
-    searches_made: NotRequired[int]          # guarded search attempts, including failed/blocked calls
+    searches_made: NotRequired[int]          # Duffel searches this node made
     fetched_at: NotRequired[str]
     cheapest_total: NotRequired[Optional[float]]   # hotel_search subtracts it from the budget
-    shortlist: NotRequired[list[FlightOffer]]      # up to 5, chosen in code
+    shortlist: NotRequired[list[FlightOffer]]      # about 5, chosen in code
 
 
 class HotelPick(TypedDict):

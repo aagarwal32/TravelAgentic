@@ -251,8 +251,7 @@ def build_place(db: Session, row: USPlace) -> Place:
     airports = nearby_airports(db, row.latitude, row.longitude)
     market = next((a["dot_market_id"] for a in airports if a["dot_market_id"] is not None), None)
     return Place(id=row.id, city=row.city, state=row.state, latitude=row.latitude,
-                 longitude=row.longitude, airports=[a["iata"] for a in airports], dot_market_id=market,
-                 flight_airports=[a["iata"] for a in airports if a["dot_market_id"] is not None])
+                 longitude=row.longitude, airports=[a["iata"] for a in airports], dot_market_id=market)
 
 
 def get_place(db: Session, place_id: str) -> Place | None:
