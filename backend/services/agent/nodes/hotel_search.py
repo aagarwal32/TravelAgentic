@@ -44,7 +44,8 @@ def stay_dates(state: TripState) -> Optional[tuple[date, date]]:
 
     Dates come from the most concrete source available: the flights the user would
     take, else the dates flight trends picked, else the trip's own dates (an exact
-    departure, or the start of the departure window). Check-out falls back to
+    departure, return minus nights within a window, or the window's start).
+    Check-out falls back to
     check-in + trip_nights; without it (or a return date) there is no stay to price.
     """
     c = TripConstraints(**state["constraints"])
@@ -52,6 +53,11 @@ def stay_dates(state: TripState) -> Optional[tuple[date, date]]:
     stay = (_flight_stay(offers) if offers else None) or (_trends_stay(trends) if trends else None)
     if stay is None:
         checkin = c.depart_date or c.flexible_start
+        if (c.depart_date is None and c.flexible_start and c.flexible_end
+                and c.return_date and c.trip_nights):
+            # Validation already checked that this implied departure fits the window.
+            # Honor both the fixed return and stay length instead of using the start.
+            checkin = c.return_date - timedelta(days=c.trip_nights)
         if checkin is None:
             return None
         stay = checkin, c.return_date

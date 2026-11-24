@@ -290,10 +290,23 @@ class FlightTrendsTests(unittest.TestCase):
             {"depart_date": "2099-04-15", "return_date": "2099-04-19"},
             {"depart_date": "2099-04-30", "return_date": "2099-05-04"}])
 
-    def test_flexible_window_discards_stale_fixed_return_according_to_constraints(self):
-        result = self.run_node(self.window(return_date="2099-03-21"))
-        self.assertEqual(result["candidate_dates"][-1],
-                         {"depart_date": "2099-04-30", "return_date": "2099-05-04"})
+    def test_flexible_window_with_fixed_return_departs_before_it(self):
+        # Cheapest quarter (Apr) up to the day before the Apr 20 return; every trip ends Apr 20
+        result = self.run_node(self.window(nights=None, return_date="2099-04-20"))
+        self.assertEqual(result["candidate_dates"], [
+            {"depart_date": "2099-04-01", "return_date": "2099-04-20"},
+            {"depart_date": "2099-04-10", "return_date": "2099-04-20"},
+            {"depart_date": "2099-04-19", "return_date": "2099-04-20"}])
+
+    def test_flexible_window_with_return_and_nights_has_one_implied_departure(self):
+        result = self.run_node(self.window(return_date="2099-04-20", nights=4))
+        self.assertEqual(result["candidate_dates"],
+                         [{"depart_date": "2099-04-16", "return_date": "2099-04-20"}])
+
+    def test_flexible_window_without_return_or_nights_is_empty(self):
+        result = self.run_node(self.window(nights=None))
+        self.assertEqual(result["status"], "empty")
+        self.assertIn("return date or stay length is missing", result["reason"])
 
     def test_one_and_two_day_windows_produce_distinct_valid_pairs(self):
         for last in (1, 2):
