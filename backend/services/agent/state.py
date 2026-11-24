@@ -256,19 +256,33 @@ class FlightOffer(TypedDict):
     currency: str
     expires_at: str                  # Duffel offers expire (~30 min); never show after this
     from_alternative_airport: bool
-    tags: list[str]                  # why it's shortlisted: "cheapest", "fastest", "best_balance", "alternative_airport"
+    tags: list[str]                  # why it's shortlisted: "cheapest", "fastest", "best_balance",
+                                     # "alternative_airport", "home_airport" (best home offer when alternatives exist)
     outbound: FlightSlice
     inbound: Optional[FlightSlice]   # None for one-way
     metrics: FlightMetrics
+
+
+class FlightSearchLog(TypedDict):
+    # One Duffel search, so "no flights on this route" is visible next to the shortlist
+    origin: str
+    destination: str
+    depart_date: str
+    return_date: Optional[str]       # None for one-way
+    offers: int                      # usable offers it returned (0 when it failed)
+    cheapest_total: Optional[float]
+    error: Optional[str]             # the failure, without secrets; None when it worked
 
 
 class FlightOffers(TypedDict):
     status: ResultStatus
     reason: NotRequired[str]
     searches_made: NotRequired[int]          # guarded search attempts, including failed/blocked calls
+    searches: NotRequired[list[FlightSearchLog]]   # one entry per attempt, in search order
     fetched_at: NotRequired[str]
     cheapest_total: NotRequired[Optional[float]]   # hotel_search subtracts it from the budget
-    shortlist: NotRequired[list[FlightOffer]]      # up to 20, chosen in code
+    shortlist: NotRequired[list[FlightOffer]]      # up to 20, chosen in code; every searched
+                                                   # airport pair keeps its cheapest offer
 
 
 class HotelPick(TypedDict):

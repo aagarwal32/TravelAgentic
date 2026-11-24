@@ -333,6 +333,18 @@ class FlightSearchTests(unittest.TestCase):
         self.assertEqual((result["status"], result["searches_made"]), ("ok", 2))
         self.assertIn("1 flight search attempt(s) failed", result["reason"])
 
+    def test_each_search_is_recorded_with_its_offers_or_error(self):
+        self.search.side_effect = [DuffelError("Duffel request timed out"), [self.offer]]
+        trends = {"status": "ok", "search_airports": {"origin": ["ORD", "MDW"]}}
+        result = self.run_node(TRIP, flight_trends=trends)
+        self.assertEqual(result["searches"], [
+            {"origin": "ORD", "destination": "JFK", "depart_date": "2099-03-10",
+             "return_date": "2099-03-14", "offers": 0, "cheapest_total": None,
+             "error": "Duffel request timed out"},
+            {"origin": "MDW", "destination": "JFK", "depart_date": "2099-03-10",
+             "return_date": "2099-03-14", "offers": 1, "cheapest_total": 420.0, "error": None},
+        ])
+
     def test_all_recoverable_failures_return_empty(self):
         self.search.side_effect = DuffelError("Duffel request timed out")
         result = self.run_node(WINDOW_TRIP)
@@ -340,8 +352,12 @@ class FlightSearchTests(unittest.TestCase):
         self.assertIn("timed out", result["reason"])
 
     def test_search_results_are_combined_deduplicated_and_filtered_before_cheapest_total(self):
-        offers = [{**self.offer, "offer_id": f"off_{index:02d}", "total_amount": 600.0 - index}
-                  for index in range(30)]
+        offers = []
+        for index in range(30):  # different flights (departure minute), so none are fare duplicates
+            offer = deepcopy(self.offer)
+            offer.update(offer_id=f"off_{index:02d}", total_amount=600.0 - index)
+            offer["outbound"]["depart_at"] = f"2099-03-10T08:{index:02d}:00"
+            offers.append(offer)
         offers[-1]["total_amount"] = 50.0
         expired = {**self.offer, "offer_id": "off_expired", "total_amount": 1.0,
                    "expires_at": self.now.isoformat()}

@@ -522,6 +522,38 @@ class ShortlistOfferTests(unittest.TestCase):
         self.assertEqual(tags["off_runner_up"], [])
         self.assertEqual(tags["off_more_value"], [])
 
+    def test_same_flights_keep_cheapest_fare_and_cheapest_carry_on_fare(self):
+        fares = []
+        for offer_id, price, carry_on in (("off_basic", 150, False), ("off_main", 180, True),
+                                          ("off_flex", 250, True), ("off_basic_plus", 160, False)):
+            fare = deepcopy(self.offers[2])
+            fare.update(offer_id=offer_id, total_amount=float(price))
+            fare["metrics"]["carry_on_included"] = carry_on
+            fares.append(fare)
+        ids = [offer["offer_id"] for offer in _shortlist_offers(fares + self.offers[:2], now=OFFER_NOW)]
+        self.assertIn("off_basic", ids)
+        self.assertIn("off_main", ids)  # the cheapest fare with a carry-on
+        self.assertNotIn("off_flex", ids)
+        self.assertNotIn("off_basic_plus", ids)
+        # When the cheapest fare already includes a carry-on, it is the only one kept
+        fares[0]["metrics"]["carry_on_included"] = True
+        ids = [offer["offer_id"] for offer in _shortlist_offers(fares, now=OFFER_NOW)]
+        self.assertEqual(ids, ["off_basic"])
+
+    def test_every_airport_pair_keeps_its_cheapest_offer(self):
+        crowd = []
+        for index in range(25):  # one route with plenty of cheap, fast, different flights
+            offer = deepcopy(self.offers[0])
+            offer.update(offer_id=f"off_crowd_{index:02d}", total_amount=100.0 + index)
+            offer["outbound"]["depart_at"] = f"2027-03-01T08:{index:02d}:00"
+            crowd.append(offer)
+        other = deepcopy(self.offers[0])
+        other.update(offer_id="off_other_route", total_amount=900.0)
+        other["outbound"].update(origin="MDW", duration_min=900)
+        result = _shortlist_offers(crowd + [other], now=OFFER_NOW)
+        self.assertEqual(len(result), 20)
+        self.assertIn("off_other_route", [offer["offer_id"] for offer in result])
+
     def test_drops_risky_offer_only_when_a_similar_clean_option_exists(self):
         clean = {**self.offers[2], "total_amount": 155.0}
         for flag in ("overnight_layover", "airport_change"):
@@ -599,8 +631,12 @@ class ShortlistOfferTests(unittest.TestCase):
         self.assertIn("fastest", tags["off_fast"])
 
     def test_ties_zero_prices_and_constant_durations_are_deterministic(self):
-        offers = [{**self.offers[0], "offer_id": f"off_{index:02d}", "total_amount": 0.0}
-                  for index in range(25)]
+        offers = []
+        for index in range(25):  # different flights (departure minute), equal everything else
+            offer = deepcopy(self.offers[0])
+            offer.update(offer_id=f"off_{index:02d}", total_amount=0.0)
+            offer["outbound"]["depart_at"] = f"2027-03-01T08:{index:02d}:00"
+            offers.append(offer)
         result = _shortlist_offers(offers, now=OFFER_NOW)
         reversed_result = _shortlist_offers(list(reversed(offers)), now=OFFER_NOW)
         self.assertEqual(result, reversed_result)
@@ -619,7 +655,7 @@ class ShortlistOfferTests(unittest.TestCase):
         original = deepcopy(self.offers)
         result = _shortlist_offers(self.offers, now=OFFER_NOW)
         self.assertEqual(self.offers, original)
-        self.assertEqual(result[0]["tags"], ["cheapest"])
+        self.assertEqual(result[0]["tags"], ["cheapest", "home_airport"])
         self.assertEqual(result[1]["tags"], ["best_balance", "alternative_airport"])
         result[0]["tags"].append("changed")
         result[0]["outbound"]["carriers"].append("changed")

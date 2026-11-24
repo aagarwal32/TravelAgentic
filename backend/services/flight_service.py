@@ -313,10 +313,24 @@ def _parse_offer(
         raise DuffelError("Duffel returned an invalid flight offer") from None
 
 
+def _flights_key(offer: "FlightOffer") -> tuple:
+    """What identifies the flights themselves, whatever the fare: every leg's airports,
+    times, stops and carriers, and the layover facts measured from them."""
+    legs = [leg for leg in (offer["outbound"], offer["inbound"]) if leg is not None]
+    metrics = offer["metrics"]
+    return (tuple((leg["origin"], leg["destination"], leg["depart_at"], leg["arrive_at"],
+                   leg["duration_min"], leg["stops"], tuple(leg["carriers"])) for leg in legs),
+            metrics["longest_layover_min"], metrics["overnight_layover"], metrics["airport_change"])
+
+
 def _shortlist_offers(
     offers: list["FlightOffer"], *, now: datetime | None = None,
 ) -> list["FlightOffer"]:
-    """Select up to twenty unexpired offers, cheapest first, without changing inputs."""
+    """Select up to twenty unexpired offers, cheapest first, without changing inputs.
+
+    One fare per set of flights (plus a carry-on fare when the cheapest lacks one), and
+    the cheapest offer of every airport pair is always kept.
+    """
     if not isinstance(offers, list):
         raise ValueError("offers must be a list of parsed offers")
     if now is not None and (not isinstance(now, datetime) or now.utcoffset() is None):
@@ -357,6 +371,23 @@ def _shortlist_offers(
             continue
         eligible.append(key)
 
+    def by_price(key):
+        return (*features[key][:2], key)
+
+    # The same flights often come back at several fares (basic, main, refundable). Keep
+    # the cheapest fare per set of flights, plus the cheapest one with a carry-on when
+    # that cheapest fare doesn't include one, so the shortlist holds real choices.
+    same_flights = defaultdict(list)
+    for key in eligible:
+        same_flights[_flights_key(by_id[key])].append(key)
+    eligible = []
+    for fares in same_flights.values():
+        fares.sort(key=by_price)
+        eligible.append(fares[0])
+        if by_id[fares[0]]["metrics"]["carry_on_included"] is not True:
+            eligible.extend([key for key in fares[1:]
+                             if by_id[key]["metrics"]["carry_on_included"] is True][:1])
+
     # Normalize each dimension across the eligible offers. Price and elapsed time
     # carry twice the weight of stops and the longest layover.
     scores = dict.fromkeys(eligible, Decimal(0))
@@ -367,24 +398,34 @@ def _shortlist_offers(
             for key in eligible:
                 scores[key] += weight * Decimal(features[key][index] - minimum) / (maximum - minimum)
 
-    def by_price(key):
-        return (*features[key][:2], key)
-
     cheapest = min(eligible, key=by_price)
     fastest = min(eligible, key=lambda key: (features[key][1], features[key][0], key))
     ranked = sorted(eligible, key=lambda key: (scores[key], by_price(key)))
     alternative = min((key for key in eligible if by_id[key]["from_alternative_airport"]),
                       key=by_price, default=None)
+    # Tag the best home-airport offer too when alternatives exist, so the two compare
+    home = (min((key for key in eligible if not by_id[key]["from_alternative_airport"]),
+                key=by_price, default=None) if alternative is not None else None)
 
     selected = {}
     for key, tag in ((cheapest, "cheapest"), (fastest, "fastest"), (ranked[0], "best_balance"),
-                     (alternative, "alternative_airport")):
+                     (alternative, "alternative_airport"), (home, "home_airport")):
         if key is None:
             continue
         if key not in selected:
             selected[key] = deepcopy(by_id[key])
             selected[key]["tags"] = []
         selected[key]["tags"].append(tag)
+    # Every searched airport pair keeps its cheapest offer, so no route is crowded out
+    routes = {}
+    for key in sorted(eligible, key=by_price):
+        routes.setdefault((by_id[key]["outbound"]["origin"], by_id[key]["outbound"]["destination"]), key)
+    for key in routes.values():
+        if len(selected) == MAX_SHORTLIST_OFFERS:
+            break
+        if key not in selected:
+            selected[key] = deepcopy(by_id[key])
+            selected[key]["tags"] = []
     for key in ranked:
         if len(selected) == MAX_SHORTLIST_OFFERS:
             break

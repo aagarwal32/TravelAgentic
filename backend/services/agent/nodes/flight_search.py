@@ -24,7 +24,7 @@ def flight_search(state: TripState) -> dict:
     result: FlightOffers = {
         "status": "empty", "reason": "no usable flight offers found", "searches_made": 0,
         "fetched_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-        "cheapest_total": None, "shortlist": [],
+        "cheapest_total": None, "shortlist": [], "searches": [],
     }
     if c.travelers is None or c.trip_type is None:
         result["reason"] = "traveler count or trip type is missing"
@@ -118,6 +118,10 @@ def flight_search(state: TripState) -> dict:
         back = None if c.trip_type == "one_way" else c.return_date or depart + timedelta(days=c.trip_nights)
         attempted.add((depart, pair))
         result["searches_made"] += 1
+        log = {"origin": origin, "destination": destination, "depart_date": depart.isoformat(),
+               "return_date": back.isoformat() if back else None, "offers": 0,
+               "cheapest_total": None, "error": None}
+        result["searches"].append(log)
         try:
             found = _search_offers(
                 origin, destination, depart, c.travelers, return_date=back,
@@ -125,11 +129,14 @@ def flight_search(state: TripState) -> dict:
                 from_alternative_airport=pair in alternative_pairs,
             )
         except DuffelSearchBlocked as exc:
-            blocked = str(exc)
+            blocked = log["error"] = str(exc)
         except DuffelError as exc:
             errors.append(str(exc))
+            log["error"] = str(exc)
         else:
             offers.extend(found)
+            log.update(offers=len(found),
+                       cheapest_total=min((offer["total_amount"] for offer in found), default=None))
             return found
         return []
 

@@ -317,7 +317,9 @@ tests also assert every successful payload field and its nested contract.
   the airports trends lists (trends decides; flight search orders the searches), and
   marks an offer `from_alternative_airport` when its airport is in a trends option. All Duffel calls
   go through one guarded client limited by `DUFFEL_DAILY_SEARCH_LIMIT`. It writes
-  up to 20 shortlisted offers with measured `metrics` and `cheapest_total`.
+  up to 20 shortlisted offers with measured `metrics` and `cheapest_total`, and a
+  `searches` list with each search's airports, dates, offer count, cheapest price or
+  error, so a route with no flights is visible.
   See [flights.md](flights.md) for setup, ranking and a test-mode run.
   - Duplicate airports/dates and identical origin/destination airport pairs are
     excluded. The primary home route is probed first. When a flexible probe finds

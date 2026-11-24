@@ -27,9 +27,14 @@ cheapest result to choose up to three neighboring dates, reserving an attempt fo
 a trends alternative when available. Follow-ups stay inside the departure window
 and preserve any fixed return date or stay length.
 
-The shortlist holds up to 20 offers. It includes the eligible cheapest,
-fastest, best-balanced, and cheapest trends alternative, with any remaining
-slots filled by the balance score. Price and journey duration each carry twice
+The shortlist holds up to 20 offers. The same flights often come back at several
+fares (basic, main, refundable); only the cheapest fare per set of flights is kept,
+plus the cheapest fare with a carry-on when the cheapest lacks one. It includes the
+eligible cheapest, fastest, best-balanced, cheapest trends alternative and, when
+there are alternatives, the cheapest home-airport offer (`home_airport`). Every
+searched airport pair keeps its cheapest offer, so a route with fewer or pricier
+flights is never crowded out by a busier one. Remaining slots are filled by the
+balance score. Price and journey duration each carry twice
 the weight of stops and longest layover. An offer with an overnight layover or
 airport change is dropped when another offer covers the same airports and travel
 dates, costs at most $10 more, takes at most 60 minutes longer and has no extra
