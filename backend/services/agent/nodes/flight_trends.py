@@ -53,8 +53,8 @@ def _missing_dates(c: TripConstraints) -> str | None:
             return "round-trip return date or stay length is missing"
     elif c.flexible_start is None or c.flexible_end is None:
         return "departure date or complete departure window is missing"
-    elif c.trip_type == "round_trip" and c.trip_nights is None:
-        return "round-trip stay length is missing"
+    elif c.trip_type == "round_trip" and c.trip_nights is None and c.return_date is None:
+        return "round-trip return date or stay length is missing"
     return None
 
 
@@ -63,14 +63,25 @@ def _candidate_dates(c: TripConstraints, home_quarters: dict,
     if c.depart_date is not None:
         return [{"depart_date": c.depart_date.isoformat(),
                  "return_date": c.return_date.isoformat() if c.trip_type == "round_trip" else None}]
-    end = c.flexible_end
+    start, end = c.flexible_start, c.flexible_end
+    if c.trip_type == "round_trip" and c.return_date is not None:
+        if c.trip_nights is not None:
+            # A fixed return and nights allow only one departure (validated to be in the window)
+            depart = c.return_date - timedelta(days=c.trip_nights)
+            return [{"depart_date": depart.isoformat(), "return_date": c.return_date.isoformat()}]
+        # A fixed return alone: leave inside the window, at least a day before the return
+        # (on the return day only if the window starts then), and all come back that day
+        end = max(start, min(end, c.return_date - timedelta(days=1)))
+        departures = select_departure_dates(start, end, home_quarters, alternative_quarters)
+        return [{"depart_date": day.isoformat(), "return_date": c.return_date.isoformat()}
+                for day in departures]
     # A window bounds departures, not returns. Only the date type's maximum can
     # shorten its feasible departure range; never subtract nights from the window.
     if c.trip_type == "round_trip":
         end = min(end, date.max - timedelta(days=c.trip_nights))
-    if end < c.flexible_start:
+    if end < start:
         return []
-    departures = select_departure_dates(c.flexible_start, end, home_quarters, alternative_quarters)
+    departures = select_departure_dates(start, end, home_quarters, alternative_quarters)
     return [{"depart_date": day.isoformat(),
              "return_date": (day + timedelta(days=c.trip_nights)).isoformat()
              if c.trip_type == "round_trip" else None}

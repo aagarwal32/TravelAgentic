@@ -50,8 +50,25 @@ A search finds hotels near the city (`/data/hotels`), then prices them
 (`TripConstraints.destination_place`, see [agent.md](agent.md#places-origin-and-destination))
 instead of a name, and its coordinates are used directly. A city name, as above, still
 works for testing by hand: its center is looked up first with `get_city_location`
-(1-6 more LiteAPI calls). The intake graph currently stops at a planning placeholder;
-calling hotel search with the saved place still needs agent integration.
+(1-6 more LiteAPI calls). The graph includes a `hotel_search` stub that calculates
+search inputs; connecting it to the real LiteAPI search is still separate work.
+
+## Agent stay dates
+
+The agent's `stay_dates()` helper in `services/agent/nodes/hotel_search.py` uses
+the cheapest shortlisted flight's dates first, then the first fare-trends date
+candidate. When neither provides dates, it falls back to the trip constraints:
+
+| Known trip details | Check-in | Check-out |
+|---|---|---|
+| Exact departure and return | Departure date | Return date |
+| Departure window, return, and nights | Return minus nights | Return date |
+| Departure window and return, no nights | Window start | Return date |
+| Departure window and nights, no return | Window start | Check-in plus nights |
+
+For example, a March window, a March 15 return, and 2 nights produce a March 13–15
+stay, not March 1–15. Intake validates that the implied departure fits the window.
+The helper returns no stay when checkout is missing or is not after check-in.
 
 ## What the results mean
 

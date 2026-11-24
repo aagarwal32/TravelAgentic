@@ -242,25 +242,23 @@ class FlightSearchTests(unittest.TestCase):
             (date(2099, 3, 31), date(2099, 4, 2)),
         ])
 
-    def test_window_with_only_stale_fixed_return_needs_a_stay_length(self):
+    def test_window_fixed_return_is_preserved_and_bounds_departures(self):
         trip = {**WINDOW_TRIP, "trip_nights": None, "return_date": "2099-03-15"}
-        result = self.run_node(trip)
-        # Main's intake contract clears a saved return next to a departure window.
-        self.assertEqual(result["status"], "empty")
-        self.assertIn("stay length is missing", result["reason"])
-        self.assertEqual(result["searches_made"], 0)
-        self.search.assert_not_called()
+        self.run_node(trip)
+        self.assertEqual([item.args[2] for item in self.search.call_args_list],
+                         [date(2099, 3, 3), date(2099, 3, 7), date(2099, 3, 14)])
+        self.assertTrue(all(item.kwargs["return_date"] == date(2099, 3, 15)
+                            for item in self.search.call_args_list))
 
-    def test_window_saved_return_is_normalized_away_and_nights_define_each_return(self):
+    def test_window_return_and_nights_use_only_the_implied_departure(self):
         trip = {**WINDOW_TRIP, "return_date": "2099-03-15"}
         self.run_node(trip, flight_trends={"status": "ok", "candidate_dates": [
             {"depart_date": "2099-03-05", "return_date": "2099-03-07"},
         ]})
-        self.assertEqual([(item.args[2], item.kwargs["return_date"]) for item in self.search.call_args_list], [
-            (date(2099, 3, 3), date(2099, 3, 5)),
-            (date(2099, 3, 17), date(2099, 3, 19)),
-            (date(2099, 3, 31), date(2099, 4, 2)),
-        ])
+        self.search.assert_called_once_with(
+            "ORD", "JFK", date(2099, 3, 13), 3, return_date=date(2099, 3, 15),
+            max_connections=None, from_alternative_airport=False,
+        )
 
     def test_invalid_or_conflicting_trend_dates_fall_back_to_trip_dates(self):
         for candidate in (None, {}, {"depart_date": "not-a-date"},

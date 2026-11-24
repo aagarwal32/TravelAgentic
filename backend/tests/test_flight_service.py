@@ -103,16 +103,12 @@ class InitialDepartureDatesTests(unittest.TestCase):
         self.assertEqual(_initial_departure_dates(exact), [date(2099, 7, 4)])
         implied = TripConstraints(trip_type="round_trip", flexible_start="2099-07-01",
                                   flexible_end="2099-07-10", return_date="2099-07-06", trip_nights=2)
-        # Exercise the service's explicit-return support independently of main's
-        # intake normalization, which currently clears window return dates.
-        implied = implied.model_copy(update={"return_date": date(2099, 7, 6)})
         self.assertEqual(_initial_departure_dates(implied), [date(2099, 7, 4)])
 
     def test_fixed_return_bounds_departures_and_one_way_ignores_hotel_stay(self):
         fields = {"flexible_start": "2099-03-01", "flexible_end": "2099-03-31",
                   "return_date": "2099-03-15"}
         round_trip = TripConstraints(trip_type="round_trip", **fields)
-        round_trip = round_trip.model_copy(update={"return_date": date(2099, 3, 15)})
         self.assertTrue(all(day <= date(2099, 3, 15) for day in _initial_departure_dates(round_trip)))
         one_way = TripConstraints(trip_type="one_way", trip_nights=2, **fields)
         self.assertEqual(_initial_departure_dates(one_way)[-1], date(2099, 3, 31))
