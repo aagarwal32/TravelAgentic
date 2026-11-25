@@ -250,7 +250,8 @@ class FlightMetrics(TypedDict):
     shortest_connection_min: Optional[int]   # under ~45 min domestic is risky
     overnight_layover: bool
     airport_change: bool                     # e.g. land at LGA, leave from JFK
-    red_eye: bool                            # departs late night or arrives before ~6 am
+    different_return_airport: bool           # round trip: out of BUR, back to LGB
+    red_eye: bool                            # in the air between 1 and 4 am local time
     carry_on_included: Optional[bool]        # None when the fare rules don't say
 
 

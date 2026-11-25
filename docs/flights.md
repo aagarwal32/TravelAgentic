@@ -45,8 +45,12 @@ balance score. Price and journey duration each carry twice
 the weight of stops and longest layover. An offer with an overnight layover or
 airport change is dropped when another offer covers the same airports and travel
 dates, costs at most $10 more, takes at most 60 minutes longer and has no extra
-stops or either risk. Hotel search uses the cheapest shortlisted offer's dates
-and fare to plan the stay and remaining budget.
+stops or either risk. A round trip that comes back to a different airport
+(`different_return_airport`: out of BUR, back to LGB) is dropped the same way when a
+clean offer on the same dates qualifies, whatever its airports. `red_eye` marks a
+flight in the air between 01:00 and 04:00 local time at either end (21:40 LAX →
+06:02 BOS is one; 22:29 DEN → 23:58 SAN is not). Hotel search uses the cheapest
+shortlisted offer's dates and fare to plan the stay and remaining budget.
 
 ## Test-mode smoke run
 

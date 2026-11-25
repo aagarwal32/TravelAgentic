@@ -1,7 +1,7 @@
 from calendar import monthrange
 from collections import defaultdict
 from copy import deepcopy
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime, time, timedelta, timezone
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 import re
 from typing import TYPE_CHECKING
@@ -179,12 +179,30 @@ def _parse_slice(value: dict) -> "FlightSlice":
         raise DuffelError("Duffel returned an invalid flight slice") from None
 
 
+RED_EYE_HOURS = (time(1), time(4))  # local night hours that make a flight a red-eye
+
+
+def _in_air_overnight(departure: datetime, arrival: datetime) -> bool:
+    """Whether a flight is in the air during RED_EYE_HOURS at either end's local time."""
+    for zone in (departure.tzinfo, arrival.tzinfo):
+        day = departure.astimezone(zone).date()
+        while day <= arrival.astimezone(zone).date():
+            start, end = (datetime.combine(day, hour, tzinfo=zone) for hour in RED_EYE_HOURS)
+            if start < arrival and departure < end:
+                return True
+            day += timedelta(days=1)
+    return False
+
+
 def _flight_metrics(slices: list[dict]) -> "FlightMetrics":
     """Measure connections within each slice, never the stay between slices.
 
     Elapsed times use UTC; overnight connections cross midnight in the arrival
-    airport's zone. A red-eye departs at/after 22:00 or before 06:00, or arrives
-    before 06:00, in airport-local time. Carry-on is included only if explicitly
+    airport's zone. A red-eye is a flight in the air at some point between 01:00 and
+    04:00 local time at its departure or arrival airport (21:40 LAX -> 06:02 BOS is
+    one; 22:29 DEN -> 23:58 SAN and a 05:59 departure are not). A round trip returns
+    to a different airport when the return doesn't leave from where the outbound
+    landed or doesn't land where it left (out of BUR, back to LGB). Carry-on is included only if explicitly
     included for every passenger on every segment; any explicit exclusion wins.
     Missing baggage information stays unknown. Ambiguous/nonexistent local times
     without an explicit UTC offset are rejected rather than guessed.
@@ -217,7 +235,7 @@ def _flight_metrics(slices: list[dict]) -> "FlightMetrics":
                 departure, arrival = times
                 if arrival.astimezone(timezone.utc) < departure.astimezone(timezone.utc):
                     raise ValueError
-                red_eye |= departure.hour >= 22 or departure.hour < 6 or arrival.hour < 6
+                red_eye |= _in_air_overnight(departure, arrival)
                 if previous_arrival is not None:
                     seconds = (departure.astimezone(timezone.utc)
                                - previous_arrival.astimezone(timezone.utc)).total_seconds()
@@ -244,11 +262,15 @@ def _flight_metrics(slices: list[dict]) -> "FlightMetrics":
                         carry_on.append(sum(quantities) > 0)
                     else:
                         carry_on.append(None)
+        different_return = len(slices) == 2 and (
+            slices[0]["segments"][0]["origin"]["iata_code"] != slices[1]["segments"][-1]["destination"]["iata_code"]
+            or slices[0]["segments"][-1]["destination"]["iata_code"] != slices[1]["segments"][0]["origin"]["iata_code"])
         return {
             "longest_layover_min": max(layovers) if layovers else None,
             "shortest_connection_min": min(layovers) if layovers else None,
             "overnight_layover": overnight,
             "airport_change": airport_change,
+            "different_return_airport": different_return,
             "red_eye": red_eye,
             "carry_on_included": False if False in carry_on else True if all(carry_on) else None,
         }
@@ -348,26 +370,34 @@ def _shortlist_offers(
         return []
 
     features, itineraries, clean_options = {}, {}, defaultdict(list)
+    trip_dates, clean_by_dates = {}, defaultdict(list)
     for key, offer in by_id.items():
         legs = [leg for leg in (offer["outbound"], offer["inbound"]) if leg is not None]
         metrics = offer["metrics"]
         itinerary = tuple((leg["origin"], leg["destination"], leg["depart_at"][:10]) for leg in legs)
+        trip_dates[key] = tuple(leg["depart_at"][:10] for leg in legs)
         price = Decimal(str(offer["total_amount"]))
         duration = sum(leg["duration_min"] for leg in legs)
         stops = sum(leg["stops"] for leg in legs)
         features[key] = (price, duration, stops, metrics["longest_layover_min"] or 0)
         itineraries[key] = itinerary
-        if not (metrics["overnight_layover"] or metrics["airport_change"]):
+        if not (metrics["overnight_layover"] or metrics["airport_change"]
+                or metrics.get("different_return_airport")):
             clean_options[itinerary].append((price, duration, stops))
+            clean_by_dates[trip_dates[key]].append((price, duration, stops))
 
     eligible = []
     for key, offer in by_id.items():
         price, duration, stops, _ = features[key]
         metrics = offer["metrics"]
-        if (metrics["overnight_layover"] or metrics["airport_change"]) and any(
-            other_price <= price + 10 and other_duration <= duration + 60 and other_stops <= stops
-            for other_price, other_duration, other_stops in clean_options[itineraries[key]]
-        ):
+        def similar(options):
+            return any(other_price <= price + 10 and other_duration <= duration + 60 and other_stops <= stops
+                       for other_price, other_duration, other_stops in options)
+        if (metrics["overnight_layover"] or metrics["airport_change"]) and similar(clean_options[itineraries[key]]):
+            continue
+        # Coming back to another airport is compared with any clean offer on the same
+        # dates, since no offer with the same airports can be clean
+        if metrics.get("different_return_airport") and similar(clean_by_dates[trip_dates[key]]):
             continue
         eligible.append(key)
 
