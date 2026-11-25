@@ -66,6 +66,8 @@ class TripConstraints(BaseModel):
     def normalize_amenities(cls, value) -> Optional[list[str]]:
         if value is None:
             return None
+        if isinstance(value, str):
+            value = [value]  # the AI sometimes returns one tag as a plain string
         if not isinstance(value, list):
             raise ValueError("hotel_amenities must be a list")
         tags = (item.strip().lower() for item in value if isinstance(item, str))

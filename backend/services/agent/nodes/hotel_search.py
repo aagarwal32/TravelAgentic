@@ -9,7 +9,7 @@ The search and the picks (search_hotels_with_prices, then the shortlist) are the
 until then the result is "empty" with these inputs filled in.
 """
 from datetime import date, timedelta
-from math import ceil 
+from math import ceil
 from typing import Optional
 
 from services.agent.state import (FlightOffers, FlightTrends, HotelOptions, TripConstraints,

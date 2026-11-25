@@ -295,6 +295,10 @@ class TripLoopTests(unittest.TestCase):
         self.assertEqual(TripConstraints(hotel_amenities=tags).hotel_amenities,
                          ['wifi', 'parking', 'pet friendly'])
 
+    def test_a_single_amenity_string_is_saved_as_a_list(self):
+        self.assertEqual(TripConstraints(hotel_amenities=' WiFi ').hotel_amenities, ['wifi'])
+        self.assertIsNone(TripConstraints(hotel_amenities='recording studio').hotel_amenities)
+
     def test_empty_and_invalid_amenity_lists_save_none(self):
         for tags in ([], ['unknown', '  '], [47, False]):
             with self.subTest(tags=tags):

@@ -217,7 +217,7 @@ def search_hotels_near(
         rating = _number(min_rating)
         if rating is None or not 0 <= rating <= 10:
             raise ValueError("min_rating must be between 0 and 10")
-        params["minRating"] = rating 
+        params["minRating"] = rating
     if facility_ids:
         for facility_id in facility_ids:
             _positive_int(facility_id, "facility_id")

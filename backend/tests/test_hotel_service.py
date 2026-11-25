@@ -17,7 +17,7 @@ CHECKIN, CHECKOUT = date(2026, 11, 18), date(2026, 11, 21)
 def fixture(name):
     return json.loads((FIXTURES / f"{name}.json").read_text(encoding="utf-8"))
 
-# completely vibed - run/alter the tests to see if the amenities pull up for a wide variety of states, new tests check radius widening
+
 class HotelServiceTests(unittest.TestCase):
     def setUp(self):
         self.transport = patch("services.liteapi_client.httpx.request", side_effect=AssertionError("Network forbidden in unit tests"))
