@@ -238,7 +238,7 @@ class FlightMetricsTests(unittest.TestCase):
         original = deepcopy(METRICS_NONSTOP)
         self.assertEqual(_flight_metrics([METRICS_NONSTOP]), {
             "longest_layover_min": None, "shortest_connection_min": None,
-            "overnight_layover": False, "airport_change": False,
+            "overnight_layover": False, "airport_change": False, "different_return_airport": False,
             "red_eye": False, "carry_on_included": True,
         })
         self.assertEqual(METRICS_NONSTOP, original)
@@ -314,12 +314,17 @@ class FlightMetricsTests(unittest.TestCase):
         self.assertEqual(_flight_metrics([value])["shortest_connection_min"], 90)
 
     def test_red_eye_boundaries_and_connecting_segments(self):
+        # Chicago -> New York: a red-eye is in the air between 01:00 and 04:00 local
+        # time at either airport
         for departure, arrival, expected in (
-            ("2027-03-01T21:59:00", "2027-03-02T06:00:00", False),
-            ("2027-03-01T22:00:00", "2027-03-02T06:00:00", True),
-            ("2027-03-01T08:00:00", "2027-03-02T05:59:00", True),
-            ("2027-03-01T05:59:00", "2027-03-01T09:00:00", True),
-            ("2027-03-01T06:00:00", "2027-03-01T09:00:00", False),
+            ("2027-03-01T21:40:00", "2027-03-02T06:02:00", True),   # overnight
+            ("2027-03-01T22:29:00", "2027-03-02T01:30:00", True),   # lands after 1 am ET
+            ("2027-03-01T22:29:00", "2027-03-02T00:00:00", False),  # late, lands by 1 am
+            ("2027-03-01T23:00:00", "2027-03-02T02:00:00", True),   # midnight CT = 01:00 ET
+            ("2027-03-02T03:00:00", "2027-03-02T06:00:00", True),   # leaves 3 am CT
+            ("2027-03-02T04:00:00", "2027-03-02T07:00:00", False),  # 04:00 CT, 05:00 ET
+            ("2027-03-01T05:59:00", "2027-03-01T09:00:00", False),  # early, not overnight
+            ("2027-03-01T08:00:00", "2027-03-02T05:59:00", True),   # a day in the air
         ):
             with self.subTest(departure=departure, arrival=arrival):
                 value = deepcopy(METRICS_NONSTOP)
@@ -330,6 +335,21 @@ class FlightMetricsTests(unittest.TestCase):
             departing_at="2027-03-01T22:00:00", arriving_at="2027-03-02T06:00:00",
         )
         self.assertTrue(_flight_metrics([value])["red_eye"])
+
+    def test_round_trip_returning_to_another_airport_is_flagged(self):
+        outbound = deepcopy(METRICS_NONSTOP)  # ORD -> JFK
+        back = deepcopy(METRICS_NONSTOP)
+        back["segments"][0].update(
+            origin={"iata_code": "JFK", "time_zone": "America/New_York"},
+            destination={"iata_code": "ORD", "time_zone": "America/Chicago"},
+            departing_at="2027-03-05T08:00:00", arriving_at="2027-03-05T09:30:00")
+        self.assertFalse(_flight_metrics([outbound, back])["different_return_airport"])
+        for end, code in (("destination", "MDW"), ("origin", "LGA")):
+            with self.subTest(end=end):
+                other = deepcopy(back)
+                other["segments"][0][end]["iata_code"] = code
+                self.assertTrue(_flight_metrics([outbound, other])["different_return_airport"])
+        self.assertFalse(_flight_metrics([outbound])["different_return_airport"])  # one-way
 
     def test_carry_on_requires_explicit_allowance_for_every_passenger_and_segment(self):
         for baggages, expected in (
@@ -392,7 +412,7 @@ class ParseOfferTests(unittest.TestCase):
             "inbound": None,
             "metrics": {
                 "longest_layover_min": None, "shortest_connection_min": None,
-                "overnight_layover": False, "airport_change": False,
+                "overnight_layover": False, "airport_change": False, "different_return_airport": False,
                 "red_eye": False, "carry_on_included": True,
             },
         })
@@ -565,6 +585,21 @@ class ShortlistOfferTests(unittest.TestCase):
                 self.assertEqual([offer["offer_id"] for offer in result], [clean["offer_id"]])
                 expensive = {**clean, "total_amount": 200.0}
                 self.assertEqual(len(_shortlist_offers([risky, expensive], now=OFFER_NOW)), 2)
+
+    def test_drops_a_different_return_airport_when_a_clean_offer_on_the_same_dates_is_as_good(self):
+        clean = deepcopy(self.offers[2])
+        clean.update(offer_id="off_clean", total_amount=155.0)
+        mismatched = deepcopy(self.offers[2])
+        mismatched.update(offer_id="off_mismatched", total_amount=150.0)
+        mismatched["outbound"]["origin"] = "BUR"   # out of BUR; the return lands elsewhere
+        mismatched["metrics"]["different_return_airport"] = True
+        result = _shortlist_offers([mismatched, clean], now=OFFER_NOW)
+        self.assertEqual([offer["offer_id"] for offer in result], ["off_clean"])
+        expensive = {**clean, "total_amount": 200.0}
+        self.assertEqual(len(_shortlist_offers([mismatched, expensive], now=OFFER_NOW)), 2)
+        later = deepcopy(clean)
+        later["outbound"]["depart_at"] = "2027-03-02" + later["outbound"]["depart_at"][10:]
+        self.assertEqual(len(_shortlist_offers([mismatched, later], now=OFFER_NOW)), 2)
 
     def test_guarantees_cheapest_alternative_and_only_tags_that_alternative(self):
         self.offers[-1]["from_alternative_airport"] = True

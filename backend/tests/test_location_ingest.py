@@ -20,7 +20,8 @@ from the real files, with a few edited on purpose:
                         unscheduled and a small airport are filtered; edited rows: no
                         IATA code (filtered), a bad latitude and a repeated DFW (skipped).
   table1a_sample.csv    DOT Table 1a airport pairs; an edited 2022 row puts GSP in
-                        another market, and the newer row must win.
+                        another market, and the newer row must win. Passenger sums
+                        and quarter counts are made up (17 quarters is the window).
 """
 
 import io
@@ -202,7 +203,8 @@ class ReadAirportsTests(unittest.TestCase):
         gsp = next(row for row in rows if row["iata"] == "GSP")
         self.assertEqual(gsp, {"iata": "GSP", "name": "Greenville-Spartanburg International Airport",
                                "city": "Greenville/Greer/Spartanburg", "state": "SC",
-                               "latitude": 34.895699, "longitude": -82.218903, "dot_market_id": None})
+                               "latitude": 34.895699, "longitude": -82.218903, "dot_market_id": None,
+                           "market_source": None, "passengers": None})
 
 
 class LinkMarketsTests(unittest.TestCase):
@@ -227,10 +229,38 @@ class LinkMarketsTests(unittest.TestCase):
         self.assertIsNone(self.markets["FTW"])  # "Fort Worth" is DFW's and DAL's market
         self.assertEqual(self.counts, {"table1a": 6, "fixed": 1, "name": 1, "none": 2})
 
+    def test_each_airport_records_how_its_market_was_found_and_its_size(self):
+        rows, _ = ingest.read_airports(AIRPORTS)
+        ingest.link_markets(rows, ingest.read_table1a_markets(TABLE1A), MARKETS,
+                            ingest.read_table1a_passengers(TABLE1A))
+        by_code = {row["iata"]: row for row in rows}
+        self.assertEqual((by_code["DFW"]["market_source"], by_code["DFW"]["passengers"]), ("table1a", 10000.0))
+        self.assertEqual(by_code["DJT"]["passengers"], 100.0)  # sized by its DOT code, PBI
+        self.assertEqual((by_code["MLI"]["market_source"], by_code["MLI"]["passengers"]), ("fixed", None))
+        self.assertEqual(by_code["CLL"]["market_source"], "name")
+        self.assertIsNone(by_code["SFB"]["market_source"])
+
     def test_without_table6_nothing_is_linked_by_name(self):
         rows, _ = ingest.read_airports(AIRPORTS)
         counts = ingest.link_markets(rows, ingest.read_table1a_markets(TABLE1A), {})
         self.assertEqual(counts["name"], 0)
+
+
+class AirportSizeTests(unittest.TestCase):
+    def test_passengers_are_summed_over_routes_and_averaged_over_the_window(self):
+        sizes = ingest.read_table1a_passengers(TABLE1A)
+        # ORD: (170000 + 400) / 17; GSP: (800 + 400) / 17 even though one route has 4 quarters
+        self.assertEqual(sizes["ORD"], round(170400 / 17, 1))
+        self.assertEqual(sizes["GSP"], round(1200 / 17, 1))
+        self.assertEqual(sizes["DFW"], 10000.0)
+
+    def test_an_older_download_without_passengers_gives_no_sizes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            old = Path(tmp) / "table1a.csv"
+            lines = [line.rsplit(",", 2)[0] for line in TABLE1A.read_text().splitlines()]
+            old.write_text("\n".join(lines) + "\n")
+            self.assertEqual(ingest.read_table1a_passengers(old), {})
+            self.assertEqual(ingest.read_table1a_markets(old)["ORD"][0], 30977)
 
 
 class LoadTests(unittest.TestCase):
@@ -274,8 +304,23 @@ class LoadTests(unittest.TestCase):
             self.assertEqual(ingest.main(args), 0)
         self.assertEqual((self.count(USPlace), self.count(Airport)), (12, 10))
         self.assertEqual(self.session.get(Airport, "CLL").dot_market_id, 31049)  # matched by Table 6 name
+        self.assertEqual(self.session.get(Airport, "CLL").market_source, "name")
+        self.assertEqual(self.session.get(Airport, "DFW").passengers, 10000.0)
+        self.assertIn("Airport sizes:", output.getvalue())
         self.assertIn("DFW  30194  Dallas/Fort Worth, TX", output.getvalue())
         self.assertIn("6 from Table 1a, 1 hand-checked, 1 by Table 6 name, 2 without a market", output.getvalue())
+
+    def test_an_airports_table_without_the_new_columns_is_recreated(self):
+        self.session.close()
+        Airport.__table__.drop(self.engine)
+        with self.engine.begin() as connection:
+            connection.exec_driver_sql(
+                "CREATE TABLE airports (iata VARCHAR(3) PRIMARY KEY, name VARCHAR, city VARCHAR, "
+                "state VARCHAR(2), latitude FLOAT, longitude FLOAT, dot_market_id INTEGER)")
+        self.assertTrue(ingest.upgrade_airports_table(self.session))
+        self.assertFalse(ingest.upgrade_airports_table(self.session))
+        ingest.load_rows(self.session, self.places, self.airports)
+        self.assertEqual(self.count(Airport), 10)
 
     def test_main_with_a_missing_file_changes_nothing(self):
         with tempfile.TemporaryDirectory() as tmp:

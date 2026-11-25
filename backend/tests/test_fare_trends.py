@@ -321,3 +321,33 @@ class QuartersInWindowTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class NearMissTests(unittest.TestCase):
+    """select_near_miss: close markets just short of the 20% alternative rule."""
+
+    def pick(self, candidates, home=200.0, travelers=2, trip_type="round_trip", exclude=None):
+        from services.fare_trends_service import FareCandidate, select_near_miss
+        return select_near_miss([FareCandidate(*c) for c in candidates], home, travelers, trip_type, exclude)
+
+    def test_denver_case_is_a_near_miss(self):
+        # 18.3% cheaper, 115 km (Colorado Springs -> Denver)
+        self.assertEqual(self.pick([(1, 182.86, 115.0)], home=223.91).market_id, 1)
+
+    def test_needs_ten_percent_or_seventy_five_dollars_for_the_trip(self):
+        self.assertIsNone(self.pick([(1, 195.0, 50.0)]))        # 2.5%, $20 for 2 round trips
+        self.assertEqual(self.pick([(1, 180.0, 50.0)]).market_id, 1)   # 10%
+        # 5% of $500, but $25 x 2 travelers x 2 directions = $100 for the trip
+        self.assertEqual(self.pick([(1, 475.0, 50.0)], home=500.0).market_id, 1)
+        self.assertIsNone(self.pick([(1, 475.0, 50.0)], home=500.0, travelers=1, trip_type="one_way"))
+
+    def test_excludes_far_alternative_qualifying_and_pricier_markets(self):
+        self.assertIsNone(self.pick([(1, 170.0, 151.0)]))   # too far
+        self.assertIsNone(self.pick([(1, 160.0, 50.0)]))    # 20%: that's an alternative
+        self.assertIsNone(self.pick([(1, 210.0, 50.0)]))    # more expensive
+        self.assertIsNone(self.pick([(1, None, 50.0)]))
+        self.assertIsNone(self.pick([(1, 170.0, 50.0)], home=None))
+        self.assertIsNone(self.pick([(1, 170.0, 50.0)], exclude=1))
+
+    def test_closest_wins(self):
+        self.assertEqual(self.pick([(1, 165.0, 120.0), (2, 175.0, 60.0)]).market_id, 2)

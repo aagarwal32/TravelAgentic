@@ -315,22 +315,33 @@ tests also assert every successful payload field and its nested contract.
 - **`flight_search`**: `search_airports` and `candidate_dates` (fallback: each place's
   own airport and the trip's dates), travelers and `max_connections`. It searches only
   the airports trends lists (trends decides; flight search orders the searches), and
-  marks an offer `from_alternative_airport` when its airport is in a trends option. All Duffel calls
+  marks an offer `from_alternative_airport` when its airport is in a trends option
+  (suggested alternative or near miss). All Duffel calls
   go through one guarded client limited by `DUFFEL_DAILY_SEARCH_LIMIT`. It writes
   up to 20 shortlisted offers with measured `metrics` and `cheapest_total`, and a
-  `searches` list with each search's airports, dates, offer count, cheapest price or
-  error, so a route with no flights is visible.
+  `searches` list with each search's airports, dates, kind (`home`, `alternative`,
+  `near_miss`), offer count, cheapest price or error, so a route with no flights is
+  visible.
   See [flights.md](flights.md) for setup, ranking and a test-mode run.
   - Duplicate airports/dates and identical origin/destination airport pairs are
-    excluded. The primary home route is probed first. When a flexible probe finds
-    fares, the node searches nearby dates around the cheapest probe and keeps a
-    slot for a trends alternative when one is available. Trend candidates must
-    satisfy the original departure bounds, return and nights.
-  - `MAX_SEARCHES_PER_TRIP = 6` in `nodes/flight_search.py` caps each node run at six
-    guarded search attempts, in addition to the client's daily limit. Failed or
-    blocked attempts consume a slot. Reaching the per-trip cap retains the results
-    found so far and reports `"per-trip search limit reached"` when combinations
-    remain.
+    excluded. Routes are searched in priority order: (1) home to home, main airports
+    first, then each place's own airport; (2) an alternative against the other
+    side's main airport; (3) alternative to alternative; (4) a near miss against the
+    other side's main airport only.
+  - **Probe, widen, extras.** The main home route is searched on up to three
+    initial dates; the cheapest becomes the date for every other route. While
+    searches remain: probe dates within 5% of the cheapest, then the days next to
+    the chosen date on the cheapest route, then the cheapest alternative routes to
+    the other side's remaining home airport. Trend candidates must satisfy the
+    original departure bounds, return and nights.
+  - `MAX_SEARCHES_PER_TRIP = 10` in `nodes/flight_search.py` caps each node run at
+    ten guarded search attempts, in addition to the client's daily limit. Failed or
+    blocked attempts consume a slot. The order means the cap cuts extras and the
+    lowest-priority routes first; reaching it while routes remain reports
+    `"per-trip search limit reached"`. Destin → Tampa on an exact date takes 2
+    searches.
+  - A near miss's offers are shortlisted only when its cheapest live offer beats
+    the home airports' cheapest (or the home airports found nothing).
   - Each search requests all returned offers. Expired, non-USD, malformed and
     incomplete offers are excluded; the combined results are deduplicated by offer
     ID and checked for expiry again before shortlisting.
@@ -403,6 +414,14 @@ $100 route can replace $85, but cannot replace $84; the distance reduction must
 also reach 20%. Comparisons use unrounded values. Named constants define the
 radius and percentage thresholds; dollars are rounded only for presentation.
 
+**Near miss.** Each side can also have one near miss, listed in `options` with
+`suggested: false`: the closest other candidate within 150 km that is cheaper than
+home but misses the 20% rule, and is at least 10% cheaper or saves at least $75 for
+the trip (fare savings × travelers × directions). It needs a home fare. It is
+searched by flight search but not charted or used for candidate dates; the reply
+mentions it only when live prices confirm it. Colorado Springs → Denver (18.3%,
+115 km) and Santa Barbara → Los Angeles (18.8%, 125 km) are near misses.
+
 ### The five decisions
 
 1. **Dates:** preserve an exact normalized departure/return pair. For a flexible
@@ -427,15 +446,19 @@ radius and percentage thresholds; dollars are rounded only for presentation.
    `"not a flying trip"` and `"origin or destination not resolved to a place"`.
    Skip before accessing local data. Completed analysis is `ok` even without fare
    history. Required-data access failures produce `empty` with a reason, including
-   database failures and missing, unreadable or malformed required Table 1a
-   metadata; programming errors are not hidden by a blanket exception handler. Non-success results do not claim a completed analysis.
-4. **Search airports:** a local airport row must agree with a market mapping from
-   local Table 1a or the loader's checked `MARKET_FIXES`, with `RENAMED_CODES`
-   aliases applied. Home airports precede the selected alternative's airports;
-   each group is sorted by city-to-airport distance and IATA, then deduplicated.
-   Without a home market, only verified place-associated codes enter the home
-   group. The same eligibility rule governs candidate distances and search lists.
-   A non-null market or membership in `Place.airports` alone is insufficient.
+   database failures and an airports table without verified market sources (an
+   older load: rerun `python -m scripts.ingest_locations`); programming errors are not hidden by a blanket exception handler. Non-success results do not claim a completed analysis.
+4. **Search airports:** an airport is eligible only when its market came from
+   Table 1a or the loader's checked `MARKET_FIXES` (`Airport.market_source`
+   `"table1a"`/`"fixed"`, recorded by `ingest_locations`; a Table 6 name match is
+   not trusted). Each market's airports are ranked by `Airport.passengers` (Table 1a
+   passengers/day, largest first), then distance; airports under 100/day are
+   dropped while their market has a bigger one. `search_airports` per side lists
+   the home market's main airport, the place's own airport (first of
+   `flight_airports`) when different, then the alternative's and the near miss's
+   main airport. Without a home market, only verified place-associated codes enter
+   the home group. A non-null market or membership in `Place.airports` alone is
+   insufficient. `options[].airports` lists the whole market, main first.
 5. **Budget:** estimate flights using the home route's selection fare times the
    number of travelers, multiplied by two for a round trip and one for one-way.
    Round-trip doubling is an estimate. `typical_trip_total` is rounded to cents;
