@@ -50,7 +50,7 @@ five public files:
 | `us_places_population` | [Census Bureau ACS 2020-2024 5-year, table B01003](https://www.census.gov/programs-surveys/acs/data/summary-file.html) | Population, which orders the "Which Greenville?" choices |
 | `us_places_centers` | [USGS GNIS Federal Codes](https://www.usgs.gov/us-board-on-geographic-names/download-gnis-data) | City-center coordinates and county labels for same-state name collisions |
 | `ourairports` | [OurAirports `airports.csv`](https://ourairports.com/data/) | US airports with scheduled flights |
-| `dot_table1a_airports` | [DOT Consumer Airfare Report, Table 1a](https://data.transportation.gov/d/tfrh-tu9e) | Which DOT city market (the ids Table 6 uses) each airport belongs to |
+| `dot_table1a_airports` | [DOT Consumer Airfare Report, Table 1a](https://data.transportation.gov/d/tfrh-tu9e) | Which DOT city market (the ids Table 6 uses) each airport belongs to, and each airport's passengers/day (to rank airports in a market) |
 
 ### Load them into the database
 
@@ -64,15 +64,19 @@ python -m scripts.ingest_locations     # loads us_places and airports
 ```
 
 `ingest_locations` replaces both tables' contents in one transaction (running it twice
-never creates duplicates, and a failed load keeps the old rows). It prints how many
-places and airports it loaded, how airports were linked to DOT markets, and the
-markets of the big metro airports so they can be checked by hand:
+never creates duplicates, and a failed load keeps the old rows). An airports table
+from before a new column (such as `market_source` and `passengers`) is dropped and
+created again first, since `create_tables` never adds columns; places and Table 6 are
+untouched. It prints how many places and airports it loaded, how airports were
+linked to DOT markets, how many have a size, and the markets of the big metro
+airports so they can be checked by hand:
 
 ```
 Places loaded:    32041  (skipped 0, same-state names disambiguated 416, without population 3)
 City centers:     30269 from GNIS, 1772 from the Gazetteer point
 Airports loaded:  502  (skipped 0)
 DOT markets:      157 from Table 1a, 15 hand-checked, 202 by Table 6 name, 128 without a market
+Airport sizes:    157 from Table 1a passengers
 Check by hand:
   DFW  30194  Dallas/Fort Worth, TX
   DAL  30194  Dallas/Fort Worth, TX
@@ -88,7 +92,11 @@ Check by hand:
 
 Each file can be loaded from another path with `--gazetteer`, `--population`,
 `--centers`, `--airports` and `--table1a`. Re-run both commands when a source is
-updated (OurAirports changes nightly, DOT every quarter).
+updated (OurAirports changes nightly, DOT every quarter). The download script skips
+files that already exist, so add `--force` to replace one. A Table 1a file from before
+airport sizes (its header ends at `last_year`) needs
+`python scripts/download_datasets.py dot_table1a_airports --force`, then
+`python -m scripts.ingest_locations`.
 
 These counts were verified from the existing local dataset snapshot in an in-memory
 database; future source releases can differ. After upgrading from the version that
@@ -141,7 +149,13 @@ to either place. No table-column migration is needed.
   Station" -> "College Station/Bryan, TX"), but never into a market Table 1a already
   covers (Orlando Sanford, SFB, isn't put in Orlando's market). The BTS Master Coordinate
   table would be the direct source, but it can only be downloaded through an
-  interactive form, not a link.
+  interactive form, not a link. **`market_source`** records which way it was found
+  (`table1a`, `fixed` or `name`).
+- **`passengers`** on each airport: Table 1a passengers/day summed over the airport's
+  routes, divided by the number of quarters downloaded (2022+). It ranks airports
+  inside a market (BOS 63,196 > PVD 7,386 > MHT 2,610; HHR has 0). Table 1a only covers
+  DOT's larger routes, so it undercounts real traffic, and airports outside Table 1a
+  have none. A Table 1a download from before this column still loads, without sizes.
 
 ### Licenses and attribution
 
@@ -189,26 +203,26 @@ home series too. These are historical average each-way fares, not live quotes.
 
 ### Airport evidence and limitations
 
-The persisted schema does not retain mapping provenance, the original
-OurAirports type/service fields, or an independent current commercial-search
-flag. Presence in `Place.airports` or a non-null DOT market alone is insufficient.
+The persisted schema retains mapping provenance (`Airport.market_source`) but not
+the original OurAirports type/service fields or an independent current
+commercial-search flag. Presence in `Place.airports` or a non-null DOT market alone
+is insufficient.
 The real snapshot maps TEB/Teterboro to market 35167 by city-name fallback and
 contains recent Table 6 history for that market. A code blacklist would not
 repair the missing metadata.
 
-Candidate and search-airport helpers therefore require an explicit mapping from
-the existing local Table 1a file plus the loader's `MARKET_FIXES`, applying
-`RENAMED_CODES`. Table 1a takes precedence. The local airport row must exist and
-its market must agree with the mapping. CMI is supported by the checked mappings.
+Candidate and search-airport helpers therefore only use airports whose market came
+from Table 1a or the loader's `MARKET_FIXES` (`market_source` `table1a` or `fixed`;
+`RENAMED_CODES` are applied at load time). CMI is supported by the checked mappings.
 TEB, FTW and BJC lack this evidence and are excluded. Intake's wider
-`Place.airports` lists remain unchanged. The node reads the existing metadata; it
-does not download files, ingest rows or add schema fields.
+`Place.airports` lists remain unchanged. The node reads this from the database; it
+does not read the Table 1a download, download files or ingest rows.
 
 This conservative rule can omit legitimate name-matched or unmapped commercial
 airports. Without a home market, only verified codes already associated with the
-place form the home search group, followed by the selected alternative's codes.
-Without evidence that group is empty. Home precedes alternative; each group is
-sorted by unrounded city-to-airport distance and IATA, with duplicates removed.
+place form the home search group, followed by the alternative's and near miss's
+main airports. Without evidence that group is empty. Inside a market, airports are
+ranked by `passengers`, then unrounded city-to-airport distance and IATA.
 Historical eligibility is not proof of currently bookable service. More complete
 coverage requires reliable source evidence or retained provenance.
 

@@ -34,6 +34,9 @@ from services.agent.state import Place
 
 DEFAULT_RADIUS_KM = 120   # how far a "nearby" airport can be (straight line)
 ALTERNATIVE_MARKET_RADIUS_KM = 400  # city to nearest eligible airport, straight line
+# Airports with fewer Table 1a passengers/day are left out while their market has a
+# bigger one (Hawthorne, HHR, has 0/day in the Los Angeles market).
+MIN_AIRPORT_PASSENGERS = 100
 ROAD_DISTANCE_FACTOR = 1.3  # rough detour allowance, not a measured road distance
 ASSUMED_DRIVING_SPEED_KMH = 80
 MAX_CHOICES = 5           # most places shown on a "Which Greenville?" card
@@ -256,7 +259,8 @@ def build_place(db: Session, row: USPlace) -> Place:
     airports = nearby_airports(db, row.latitude, row.longitude)
     market = next((a["dot_market_id"] for a in airports if a["dot_market_id"] is not None), None)
     return Place(id=row.id, city=row.city, state=row.state, latitude=row.latitude,
-                 longitude=row.longitude, airports=[a["iata"] for a in airports], dot_market_id=market)
+                 longitude=row.longitude, airports=[a["iata"] for a in airports], dot_market_id=market,
+                 flight_airports=[a["iata"] for a in airports if a["dot_market_id"] is not None])
 
 
 def get_place(db: Session, place_id: str) -> Place | None:
@@ -355,27 +359,57 @@ def nearby_alternative_markets(db: Session, place: Place,
     return sorted(nearest.values(), key=lambda candidate: (candidate.distance_km, candidate.market_id))
 
 
+def _ranked_market_airports(airports: list[Airport], market_id: int, place: Place) -> list[Airport]:
+    """One market's eligible airports, main first, without the near-empty ones.
+
+    Ordered by Table 1a passengers/day (largest first), then by distance from the
+    place's city and IATA; airports without a size come after sized ones. Airports
+    under MIN_AIRPORT_PASSENGERS (Hawthorne, HHR: 0/day in the Los Angeles market)
+    are dropped unless every airport of the market is that small.
+    """
+    members = sorted(
+        (airport for airport in airports if airport.dot_market_id == market_id),
+        key=lambda airport: (airport.passengers is None, -(airport.passengers or 0),
+                             distance_km(place.latitude, place.longitude, airport.latitude, airport.longitude),
+                             airport.iata))
+    busy = [airport for airport in members
+            if airport.passengers is None or airport.passengers >= MIN_AIRPORT_PASSENGERS]
+    return busy or members[:1]
+
+
+def market_airport_codes(db: Session, place: Place, verified_airport_markets: Mapping[str, int],
+                         market_id: int) -> list[str]:
+    """Every eligible airport code of one market, main first (for showing an option)."""
+    airports = _search_eligible_airports(db, verified_airport_markets)
+    return [airport.iata for airport in _ranked_market_airports(airports, market_id, place)]
+
+
 def search_airport_codes(db: Session, place: Place,
                          verified_airport_markets: Mapping[str, int],
-                         alternative_market_id: int | None = None) -> list[str]:
-    """Eligible home airports first, then the selected alternative, for one side.
+                         alternative_market_id: int | None = None,
+                         near_miss_market_id: int | None = None) -> list[str]:
+    """The airports flight search tries for one side: home first, then the others.
 
-    This returns codes only, not a guessed flight_search node payload. Each group is
-    ordered by unrounded distance from the supplied city and then IATA. With no home
-    market, only metadata-verified codes associated with the place form the first
-    group. Stale, unknown and unmapped Place.airports entries are never copied.
+    Home market: its main (largest) airport, plus the place's own airport (the first of
+    Place.flight_airports, else Place.airports, in that market) when it differs:
+    Providence searches BOS and PVD, not MHT. The alternative and near-miss markets
+    add only their main airport. With no home market, the verified airports associated
+    with the place form the home group, closest first. Stale, unknown and unmapped
+    Place.airports entries are never copied.
     """
     airports = _search_eligible_airports(db, verified_airport_markets)
-    associated = set(place.airports)
-
-    def order(airport: Airport):
-        return (distance_km(place.latitude, place.longitude, airport.latitude, airport.longitude),
-                airport.iata)
-
     if place.dot_market_id is None:
-        home = [airport for airport in airports if airport.iata in associated]
+        associated = set(place.airports)
+        home = [airport.iata for airport in sorted(
+            (airport for airport in airports if airport.iata in associated),
+            key=lambda airport: (distance_km(place.latitude, place.longitude,
+                                             airport.latitude, airport.longitude), airport.iata))]
     else:
-        home = [airport for airport in airports if airport.dot_market_id == place.dot_market_id]
-    alternative = [airport for airport in airports
-                   if alternative_market_id is not None and airport.dot_market_id == alternative_market_id]
-    return list(dict.fromkeys(airport.iata for airport in sorted(home, key=order) + sorted(alternative, key=order)))
+        members = {airport.iata for airport in airports if airport.dot_market_id == place.dot_market_id}
+        ranked = _ranked_market_airports(airports, place.dot_market_id, place)
+        own_list = place.flight_airports if place.flight_airports is not None else place.airports
+        own = next((code for code in own_list if code in members), None)
+        home = [airport.iata for airport in ranked[:1]] + ([own] if own else [])
+    others = [_ranked_market_airports(airports, market_id, place)[:1]
+              for market_id in (alternative_market_id, near_miss_market_id) if market_id is not None]
+    return list(dict.fromkeys(home + [airport.iata for group in others for airport in group]))

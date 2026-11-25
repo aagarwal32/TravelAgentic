@@ -39,6 +39,12 @@ MARKET_SIZE_QUARTERS = 4
 ALTERNATIVE_MAX_HOME_FARE_RATIO = 0.80
 CLOSER_MIN_CHEAPEST_FARE_RATIO = 0.85
 CLOSER_MAX_DISTANCE_RATIO = 0.80
+# A near miss: a market that misses the 20% alternative rule but is close and still
+# clearly cheaper (Denver for Colorado Springs: 18.3%, 115 km). Flight search tries it;
+# it is only shown when live prices confirm it.
+NEAR_MISS_MAX_DISTANCE_KM = 150
+NEAR_MISS_MIN_SAVINGS_RATIO = 0.10
+NEAR_MISS_MIN_TRIP_SAVINGS = 75.0   # USD for the whole party, both directions
 
 
 class MarketSizeSnapshot(NamedTuple):
@@ -179,6 +185,33 @@ def select_alternative(candidates: Iterable[FareCandidate],
               if cheapest.fare >= CLOSER_MIN_CHEAPEST_FARE_RATIO * c.fare
               and c.distance_km <= CLOSER_MAX_DISTANCE_RATIO * cheapest.distance_km]
     return min(closer, key=lambda c: (c.distance_km, c.fare, c.market_id)) if closer else cheapest
+
+
+def select_near_miss(candidates: Iterable[FareCandidate], home_fare: float | None,
+                     travelers: int | None, trip_type: str | None,
+                     exclude_market_id: int | None = None) -> FareCandidate | None:
+    """The closest market just short of the alternative rule, or None.
+
+    It must be within NEAR_MISS_MAX_DISTANCE_KM, cheaper than home but not by the
+    alternative's 20%, and save at least NEAR_MISS_MIN_SAVINGS_RATIO per fare or
+    NEAR_MISS_MIN_TRIP_SAVINGS for the trip (fare savings x travelers x directions).
+    Needs a home fare. The side's chosen alternative (exclude_market_id) is skipped.
+    """
+    if home_fare is None or not isfinite(home_fare) or home_fare <= 0:
+        return None
+    trip_fares = max(travelers or 1, 1) * (2 if trip_type == "round_trip" else 1)
+    near = []
+    for candidate in candidates:
+        if candidate.market_id == exclude_market_id or candidate.fare is None or not isfinite(candidate.fare):
+            continue
+        if candidate.fare <= 0 or candidate.distance_km > NEAR_MISS_MAX_DISTANCE_KM:
+            continue
+        savings = home_fare - candidate.fare
+        if savings <= 0 or candidate.fare <= ALTERNATIVE_MAX_HOME_FARE_RATIO * home_fare:
+            continue
+        if savings >= NEAR_MISS_MIN_SAVINGS_RATIO * home_fare or savings * trip_fares >= NEAR_MISS_MIN_TRIP_SAVINGS:
+            near.append(candidate)
+    return min(near, key=lambda c: (c.distance_km, c.fare, c.market_id)) if near else None
 
 
 def estimate_flight_cost(each_way_fare: float | None, travelers: int | None,

@@ -27,6 +27,10 @@ Where the data comes from (all public domain, see docs/data.md):
   names, one city of the name at a time ("College Station" -> "College Station/Bryan,
   TX"), but only into a market that Table 1a doesn't already cover (Orlando Sanford,
   SFB, must not join Orlando: DOT has a separate Sanford market).
+- Airport size: Table 1a's passengers/day summed over each airport's routes and averaged
+  over the downloaded quarters. It ranks the airports of one market (BOS over PVD), so
+  flight search tries the main one first. An older Table 1a download without these
+  columns still loads; the airports then have no size and are ordered by distance.
 
 Like ingest_table6, the script REPLACES both tables' contents in one transaction, so
 running it twice gives the same result and a failed load keeps the old rows.
@@ -43,7 +47,7 @@ from collections import Counter, defaultdict
 from pathlib import Path
 from typing import NamedTuple
 
-from sqlalchemy import delete, insert, select, union
+from sqlalchemy import delete, insert, inspect, select, union
 from sqlalchemy.orm import Session
 
 from db.database import SessionLocal, create_tables
@@ -72,6 +76,7 @@ AIRPORT_COLUMNS = ["iata_code", "name", "type", "iso_country", "iso_region", "mu
                    "scheduled_service", "latitude_deg", "longitude_deg"]
 AIRPORT_TYPES = {"large_airport", "medium_airport"}
 TABLE1A_COLUMNS = ["airport_1", "citymarketid_1", "city1", "airport_2", "citymarketid_2", "city2"]
+TABLE1A_SIZE_COLUMNS = ["passengers", "quarters"]  # optional: airport sizes
 
 # The kind of place at the end of a Census name ("Greenville city", "Urban Honolulu
 # CDP"), longest first so "city and borough" goes before "borough".
@@ -367,7 +372,8 @@ def read_airports(path: Path) -> tuple[list[dict], int]:
             seen.add(iata)
             rows.append({"iata": iata, "name": (raw["name"] or "").strip() or iata,
                          "city": (raw["municipality"] or "").strip() or None, "state": state,
-                         "latitude": latitude, "longitude": longitude, "dot_market_id": None})
+                         "latitude": latitude, "longitude": longitude, "dot_market_id": None,
+                         "market_source": None, "passengers": None})
     return rows, skipped
 
 
@@ -397,6 +403,36 @@ def read_table1a_markets(path: Path) -> dict[str, tuple[int, str]]:
     return {code: (market_id, name) for code, (market_id, name, _) in markets.items()}
 
 
+def read_table1a_passengers(path: Path) -> dict[str, float]:
+    """Each airport's average passengers/day on its Table 1a routes, as {"BOS": 65434.2}.
+
+    Each row is one airport pair with `passengers` summed over the `quarters` it appears
+    in. An airport's total is the sum over its pairs divided by the most quarters any pair
+    has (the length of the download's window), so a route DOT only listed for a while
+    counts for that share of the time. Returns {} for a download without these columns.
+    """
+    totals: dict[str, float] = defaultdict(float)
+    window = 0
+    with open(path, newline="", encoding="utf-8-sig") as f:
+        reader = csv.DictReader(f)
+        _check_header(reader.fieldnames, TABLE1A_COLUMNS, "Table 1a file")
+        if any(column not in reader.fieldnames for column in TABLE1A_SIZE_COLUMNS):
+            return {}
+        for row in reader:
+            try:
+                passengers, quarters = _float(row["passengers"]), int(row["quarters"])
+            except (TypeError, ValueError):
+                continue
+            if passengers < 0 or quarters <= 0:
+                continue
+            window = max(window, quarters)
+            for side in ("1", "2"):
+                code = (row[f"airport_{side}"] or "").strip().upper()
+                if code:
+                    totals[code] += passengers
+    return {code: round(total / window, 1) for code, total in totals.items()} if window else {}
+
+
 def table6_markets(session: Session) -> dict[int, str]:
     """Every DOT city market in the loaded Table 6, as {30194: "Dallas/Fort Worth, TX"}."""
     query = union(select(AirfareQuarter.citymarketid_1, AirfareQuarter.city1),
@@ -416,8 +452,9 @@ def _market_name_keys(name: str) -> list[tuple[str, str]]:
 
 
 def link_markets(airports: list[dict], table1a: dict[str, tuple[int, str]],
-                 markets: dict[int, str]) -> dict:
-    """Set dot_market_id on each airport row; return how many were linked each way.
+                 markets: dict[int, str], passengers: dict[str, float] | None = None) -> dict:
+    """Set dot_market_id, market_source and passengers on each airport row; return how
+    many were linked each way.
 
     1. By IATA code from Table 1a (DOT's own assignment).
     2. The hand-checked MARKET_FIXES.
@@ -436,20 +473,42 @@ def link_markets(airports: list[dict], table1a: dict[str, tuple[int, str]],
     counts = {"table1a": 0, "fixed": 0, "name": 0, "none": 0}
     for airport in airports:
         code = RENAMED_CODES.get(airport["iata"], airport["iata"])
+        airport["passengers"] = (passengers or {}).get(code)
         if code in table1a:
-            airport["dot_market_id"] = table1a[code][0]
+            airport["dot_market_id"], airport["market_source"] = table1a[code][0], "table1a"
             counts["table1a"] += 1
             continue
         if code in MARKET_FIXES:
-            airport["dot_market_id"] = MARKET_FIXES[code]
+            airport["dot_market_id"], airport["market_source"] = MARKET_FIXES[code], "fixed"
             counts["fixed"] += 1
             continue
         found = set()
         for city in (airport["city"] or "").split("/"):  # "Chicago/Rockford" -> both
             found |= by_name.get((airport["state"], normalize_name(city)), set())
         airport["dot_market_id"] = found.pop() if len(found) == 1 else None
+        airport["market_source"] = "name" if airport["dot_market_id"] is not None else None
         counts["name" if airport["dot_market_id"] is not None else "none"] += 1
     return counts
+
+
+def upgrade_airports_table(session: Session) -> bool:
+    """Recreate an airports table that predates a column the model now has.
+
+    create_tables never adds columns to an existing table, and load_rows replaces every
+    airport row anyway, so an older airports table is dropped and created again (the
+    us_places and Table 6 tables are untouched). Returns True when it was recreated.
+    """
+    bind = session.get_bind()
+    inspector = inspect(bind)
+    if not inspector.has_table(Airport.__tablename__):
+        return False
+    existing = {column["name"] for column in inspector.get_columns(Airport.__tablename__)}
+    if set(Airport.__table__.columns.keys()) <= existing:
+        return False
+    session.close()
+    Airport.__table__.drop(bind)
+    Airport.__table__.create(bind)
+    return True
 
 
 def load_rows(session: Session, places: list[dict], airports: list[dict]) -> None:
@@ -493,6 +552,7 @@ def main(argv: list[str] | None = None) -> int:
                                        read_city_centers(args.centers))
     airports, airports_skipped = read_airports(args.airports)
     table1a = read_table1a_markets(args.table1a)
+    sizes = read_table1a_passengers(args.table1a) if table1a else {}
     if not places or not airports or not table1a:
         # Never wipe the tables because of an empty or wrong file.
         print("A file had no usable rows; the tables were NOT changed.")
@@ -500,7 +560,8 @@ def main(argv: list[str] | None = None) -> int:
 
     create_tables()
     with SessionLocal() as session:
-        links = link_markets(airports, table1a, table6_markets(session))
+        upgraded = upgrade_airports_table(session)
+        links = link_markets(airports, table1a, table6_markets(session), sizes)
         load_rows(session, places, airports)
 
     print(f"Places loaded:    {len(places)}  (skipped {place_counts['skipped']}, "
@@ -511,6 +572,13 @@ def main(argv: list[str] | None = None) -> int:
     print(f"Airports loaded:  {len(airports)}  (skipped {airports_skipped})")
     print(f"DOT markets:      {links['table1a']} from Table 1a, {links['fixed']} hand-checked, "
           f"{links['name']} by Table 6 name, {links['none']} without a market")
+    sized = sum(1 for airport in airports if airport["passengers"] is not None)
+    print(f"Airport sizes:    {sized} from Table 1a passengers")
+    if not sizes:
+        print("  The Table 1a file has no passenger columns: re-download it "
+              "(python scripts/download_datasets.py dot_table1a_airports) to rank airports by size.")
+    if upgraded:
+        print("  The airports table was recreated for its new columns.")
     if links["name"] == 0:
         print("  No airport was linked by name: load Table 6 first (python -m scripts.ingest_table6).")
     by_code = {a["iata"]: a["dot_market_id"] for a in airports}

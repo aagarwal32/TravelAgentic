@@ -29,6 +29,7 @@ class Place(BaseModel):
     longitude: float
     airports: list[str]        # nearby airports with scheduled flights, closest first: ["GSP"]
     dot_market_id: Optional[int] = None   # DOT Table 6 market of the closest airport that has one
+    flight_airports: Optional[list[str]] = None  # Nearby airports with a DOT market, closest first.
 
 
 class TripConstraints(BaseModel):
@@ -44,14 +45,15 @@ class TripConstraints(BaseModel):
     depart_date: Optional[date] = None
     # A departure window: the user can leave on ANY day from flexible_start to
     # flexible_end ("sometime in March" -> Mar 1 to Mar 31). It only describes the
-    # departure, so a window goes with trip_nights, never with a fixed return_date.
+    # departure; a stated return_date can still fix when the trip ends.
     flexible_start: Optional[date] = None
     flexible_end: Optional[date] = None
     budget: Optional[float] = Field(None, gt=0)   
     travelers: Optional[int] = Field(None, ge=1, le=9)
     # Round trips: after an exact departure date normalize_dates derives one of these
     # from the other (nights only when the stay is 1 to 30, the range the nights card
-    # can express); after a departure window only trip_nights is set.
+    # can express). A departure window can retain a stated return_date, trip_nights,
+    # or both; no exact departure is inferred here.
     return_date: Optional[date] = None
     trip_nights: Optional[int] = Field(None, ge=TRIP_NIGHTS_MIN, le=TRIP_NIGHTS_MAX)
     max_connections: Optional[int] = Field(None, ge=0, le=2)
@@ -85,14 +87,10 @@ class TripConstraints(BaseModel):
 
         The date math lives here, in code: the AI only extracts what the user said
         ("4 nights" -> trip_nights: 4) and never computes a return date itself. This
-        runs on every validation, so a saved trip that still has a return date next
-        to a departure window is cleaned up when it is loaded.
+        runs on every validation, including when saved trip details are loaded.
+        A departure window does not erase an explicitly stated return date.
         """
         today = date.today()
-        if self.depart_date is None and self.flexible_start and self.flexible_end and self.return_date:
-            # A fixed return date does not fit "leave any day in the window". The stay
-            # length is trip_nights instead, so drop it (from the AI or an old saved state)
-            self.return_date = None
         if self.flexible_start and self.flexible_start < today:
             raise ValueError("flexible_start is in the past")
         if self.flexible_end and self.flexible_end < today:
@@ -114,6 +112,17 @@ class TripConstraints(BaseModel):
         elif self.depart_date and self.trip_nights:
             # Exact departure + nights: the return date is departure + nights
             self.return_date = self.depart_date + timedelta(days=self.trip_nights)
+        elif self.flexible_start and self.flexible_end and self.return_date:
+            # A fixed return may fall inside the departure window, but cannot be
+            # before every possible departure. Keep the user's original bounds.
+            if self.return_date < self.flexible_start:
+                raise ValueError("return_date before the start of the departure window")
+            if self.trip_nights is not None:
+                # Return minus nights implies one departure. Check that it fits
+                # the window without replacing the user's flexible date fields.
+                implied_departure = self.return_date - timedelta(days=self.trip_nights)
+                if not self.flexible_start <= implied_departure <= self.flexible_end:
+                    raise ValueError("return_date and trip_nights require a departure outside the window")
         return self
 
 REQUIRED = ["origin", "destination", "mode", "trip_type", "budget", "travelers"]
@@ -132,17 +141,11 @@ def compute_missing(c: TripConstraints) -> list[str]:
     has_dates = c.depart_date or (c.flexible_start and c.flexible_end)
     if not has_dates:
         missing.append("depart_date")
-    if c.trip_type == "round_trip":
-        # Asked right after the departure, as the return date was before
-        if c.depart_date:
-            # Exact departure: a return date OR a number of nights is enough, since
-            # normalize_dates fills in the other one
-            if c.return_date is None and c.trip_nights is None:
-                missing.append("return_date")
-        elif c.trip_nights is None:
-            # Departure window (or no departure yet): ask how long the trip is, never
-            # for a return date, because "leave any day in the window" has no fixed end
-            missing.append("trip_nights")
+    if c.trip_type == "round_trip" and c.return_date is None and c.trip_nights is None:
+        # A return date or nights the user already gave needs no follow-up. Otherwise an
+        # exact departure asks for the return date; a window (or no departure yet) asks
+        # for nights, so the departure stays flexible and later steps know the stay length
+        missing.append("return_date" if c.depart_date else "trip_nights")
     return missing
 
 # --- Planning node results ---------------------------------------------------------
@@ -159,16 +162,19 @@ def compute_missing(c: TripConstraints) -> list[str]:
 #   other keys are always present when "ok"; they may be missing otherwise.
 # - A node must still work when the node before it has no result (missing,
 #   "skipped" or "empty"):
-#     flights without trends: search the places' own airports on the trip's dates
+#     flights without trends: search each place's own airport on the trip's dates
 #     hotels without flights: the full budget, and dates from the trip itself
 # - Prices come only from data (DOT Table 6, Duffel, LiteAPI), never from the AI.
 #   Live results carry "fetched_at" (UTC, ISO 8601).
 # - Dates are ISO strings ("2027-03-10") and money is USD rounded to cents, so state
 #   stays JSON-friendly like constraints.
-# - A departure window becomes concrete dates once, in flight_trends: up to 3
-#   departure dates inside the window (in its cheapest quarter, spread out), each
-#   with return_date = depart_date + trip_nights. An exact date has one candidate,
-#   (depart_date, return_date). One-way trips have return_date None.
+# - Candidate dates (flight_trends): an exact departure has one candidate,
+#   (depart_date, return_date). A window with nights alone has up to 3 departures
+#   inside the window (in its cheapest quarter, spread out), returning depart_date +
+#   trip_nights. With a fixed return alone, candidates use that return and departures
+#   inside the window before it. With return and nights, only return_date -
+#   trip_nights fits.
+#   One-way trips have return_date None.
 
 ResultStatus = Literal["ok", "skipped", "empty"]
 
@@ -196,11 +202,14 @@ class RouteTrend(TypedDict):
 class RouteOption(TypedDict):
     route: str
     side: Literal["departure", "arrival"]   # which end of the trip uses the other airport
-    airports: list[str]              # the alternative market's airports: ["MDW", "ORD"]
+    airports: list[str]              # that market's airports, main (busiest) first: ["ORD", "MDW"]
     distance_km: float               # from the place's center to the closest of them
     avg_fare: Optional[float]
     savings_each_way: Optional[float]   # vs the home route; None if either has no data
-    suggested: bool                  # cheap enough to suggest (and to chart)
+    # True: the alternative (>= 20% cheaper), suggested and charted. False: a near miss
+    # (within 150 km, 10-20% cheaper or >= $75 saved per trip), only searched; the reply
+    # mentions it when live prices beat the home airports. At most one of each per side.
+    suggested: bool
 
 
 class ChartSeries(TypedDict):
@@ -217,7 +226,9 @@ class FareChart(TypedDict):
 
 
 class SearchAirports(TypedDict):
-    origin: list[str]                # home airports first, then suggested alternatives
+    # Home market's main airport, the place's own airport if different, then the
+    # alternative's and the near miss's main airport
+    origin: list[str]
     destination: list[str]
 
 
@@ -258,7 +269,8 @@ class FlightMetrics(TypedDict):
     shortest_connection_min: Optional[int]   # under ~45 min domestic is risky
     overnight_layover: bool
     airport_change: bool                     # e.g. land at LGA, leave from JFK
-    red_eye: bool                            # departs late night or arrives before ~6 am
+    different_return_airport: bool           # round trip: out of BUR, back to LGB
+    red_eye: bool                            # in the air between 1 and 4 am local time
     carry_on_included: Optional[bool]        # None when the fare rules don't say
 
 
@@ -269,19 +281,34 @@ class FlightOffer(TypedDict):
     currency: str
     expires_at: str                  # Duffel offers expire (~30 min); never show after this
     from_alternative_airport: bool
-    tags: list[str]                  # why it's shortlisted: "cheapest", "fastest", "best_balance", "alternative_airport"
+    tags: list[str]                  # why it's shortlisted: "cheapest", "fastest", "best_balance",
+                                     # "alternative_airport", "home_airport" (best home offer when alternatives exist)
     outbound: FlightSlice
     inbound: Optional[FlightSlice]   # None for one-way
     metrics: FlightMetrics
 
 
+class FlightSearchLog(TypedDict):
+    # One Duffel search, so "no flights on this route" is visible next to the shortlist
+    origin: str
+    destination: str
+    depart_date: str
+    return_date: Optional[str]       # None for one-way
+    kind: Literal["home", "alternative", "near_miss"]   # which airports the route uses
+    offers: int                      # usable offers it returned (0 when it failed)
+    cheapest_total: Optional[float]
+    error: Optional[str]             # the failure, without secrets; None when it worked
+
+
 class FlightOffers(TypedDict):
     status: ResultStatus
     reason: NotRequired[str]
-    searches_made: NotRequired[int]          # Duffel searches this node made
+    searches_made: NotRequired[int]          # guarded search attempts, including failed/blocked calls
+    searches: NotRequired[list[FlightSearchLog]]   # one entry per attempt, in search order
     fetched_at: NotRequired[str]
     cheapest_total: NotRequired[Optional[float]]   # hotel_search subtracts it from the budget
-    shortlist: NotRequired[list[FlightOffer]]      # about 5, chosen in code
+    shortlist: NotRequired[list[FlightOffer]]      # up to 20, chosen in code; every searched
+                                                   # airport pair keeps its cheapest offer
 
 
 class HotelPick(TypedDict):

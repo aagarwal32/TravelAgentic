@@ -101,19 +101,21 @@ class FlightTrendsTests(unittest.TestCase):
             self.assertTrue(result["home"]["route"])
             self.assertIs(type(result["home"]["has_data"]), bool)
             self.assertEqual(result["home"]["has_data"], result["home"]["avg_fare"] is not None)
-            self.assertLessEqual(len(result["options"]), 2)
-            self.assertEqual(len({o["side"] for o in result["options"]}), len(result["options"]))
+            self.assertLessEqual(len(result["options"]), 4)
+            self.assertEqual(len({(o["side"], o["suggested"]) for o in result["options"]}),
+                             len(result["options"]))
             for option in result["options"]:
                 self.assertEqual(set(option), set(RouteOption.__annotations__))
                 self.assertIn(option["side"], ("departure", "arrival"))
                 self.assertTrue(option["route"])
-                self.assertTrue(option["suggested"])
+                self.assertIs(type(option["suggested"]), bool)
                 self.assertGreater(option["avg_fare"], 0)
                 self.assertGreaterEqual(option["distance_km"], 0)
                 self.assertLessEqual(option["distance_km"], 400)
-            self.assertEqual(len(result["chart"]["series"]), len(result["options"]) + 1)
+            suggested = [o for o in result["options"] if o["suggested"]]
+            self.assertEqual(len(result["chart"]["series"]), len(suggested) + 1)
             self.assertEqual([s["home"] for s in result["chart"]["series"]],
-                             [True] + [False] * len(result["options"]))
+                             [True] + [False] * len(suggested))
             for series in result["chart"]["series"]:
                 self.assertEqual(set(series), set(ChartSeries.__annotations__))
                 self.assertEqual(len(series["values"]), 4)
@@ -189,25 +191,36 @@ class FlightTrendsTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "programming error"):
                 self.run_node()
 
-    def test_missing_metadata_file_returns_empty(self):
+    def test_airport_metadata_comes_from_verified_market_sources_in_the_database(self):
         self.mapping_patch.stop()
-        with patch.object(node, "read_table1a_markets", side_effect=FileNotFoundError("metadata")):
-            self.assertEqual(self.run_node()["status"], "empty")
+        with Session(self.engine) as db:
+            for code, source in (("CMI", "fixed"), ("JFK", "table1a"), ("EWR", "table1a"),
+                                 ("MDW", "table1a"), ("ORD", "table1a"), ("STL", "table1a"),
+                                 ("PHL", "table1a"), ("TEB", "name")):
+                db.get(Airport, code).market_source = source
+            db.commit()
+            mappings = node.read_verified_airport_markets(db)
+        self.assertEqual(mappings, self.verified)  # TEB's name match is not trusted
+        result = self.run_node()
+        self.assertEqual(result["status"], "ok")
+        self.assertNotIn("TEB", json.dumps(result))
 
-    def test_airport_metadata_uses_local_table_checked_mappings_and_renamed_codes(self):
+    def test_no_verified_airport_returns_empty_with_a_reload_hint(self):
         self.mapping_patch.stop()
-        sample = Path(__file__).parent / "fixtures/locations/table1a_sample.csv"
-        mappings = node.read_verified_airport_markets(sample)
-        self.assertEqual(mappings["ORD"], 30977)
-        self.assertEqual(mappings["CMI"], node.MARKET_FIXES["CMI"])
-        for local_code, source_code in node.RENAMED_CODES.items():
-            if source_code in mappings:
-                self.assertEqual(mappings[local_code], mappings[source_code])
-        for failure in (ValueError("bad header"), UnicodeError("bad encoding")):
-            with self.subTest(failure=failure), patch.object(node, "read_table1a_markets", side_effect=failure):
-                self.assertEqual(self.run_node()["status"], "empty")
-        with patch.object(node, "read_table1a_markets", return_value={}):
-            self.assertEqual(self.run_node()["status"], "empty")
+        result = self.run_node()  # the fixture airports have no market_source
+        self.assertEqual(result["status"], "empty")
+        self.assertIn("ingest_locations", result["reason"])
+
+    def test_airports_table_from_an_older_load_returns_empty_with_a_reload_hint(self):
+        self.mapping_patch.stop()
+        Airport.__table__.drop(self.engine)
+        with self.engine.begin() as connection:
+            connection.exec_driver_sql(
+                "CREATE TABLE airports (iata VARCHAR(3) PRIMARY KEY, name VARCHAR, city VARCHAR, "
+                "state VARCHAR(2), latitude FLOAT, longitude FLOAT, dot_market_id INTEGER)")
+        result = self.run_node()
+        self.assertEqual(result["status"], "empty")
+        self.assertIn("ingest_locations", result["reason"])
 
     def test_no_fare_history_still_has_complete_ok_result_and_null_chart(self):
         with Session(self.engine) as db:
@@ -242,16 +255,69 @@ class FlightTrendsTests(unittest.TestCase):
                                                "airports": ["BAD", "CMI", "CMI"]}}
         result = self.run_node(constraints)
         self.assertIsNone(result["home"]["avg_fare"])
-        self.assertEqual(result["search_airports"]["origin"], ["CMI", "MDW", "ORD"])
+        # Home: the associated verified airports; the alternative adds only its main airport
+        self.assertEqual(result["search_airports"]["origin"], ["CMI", "MDW"])
         self.assertEqual([o["side"] for o in result["options"]], ["departure"])
+        self.assertEqual(result["options"][0]["airports"], ["MDW", "ORD"])
         self.assertIsNone(result["options"][0]["savings_each_way"])
 
-    def test_search_airports_home_first_distance_order_dedup_and_eligibility(self):
+    def test_search_airports_are_each_markets_main_airport_home_first(self):
         result = self.run_node()
-        self.assertEqual(result["search_airports"], {"origin": ["CMI", "MDW", "ORD"],
-                                                    "destination": ["JFK", "EWR", "PHL"]})
+        # Without sizes, the closest airport is the main one. EWR is in the home market
+        # but neither its main airport nor the place's own airport, so it isn't searched.
+        self.assertEqual(result["search_airports"], {"origin": ["CMI", "MDW"],
+                                                    "destination": ["JFK", "PHL"]})
         self.assertNotIn("TEB", json.dumps(result))
         self.assertNotIn("BAD", json.dumps(result))
+
+    def set_passengers(self, **sizes):
+        with Session(self.engine) as db:
+            for code, passengers in sizes.items():
+                db.get(Airport, code).passengers = passengers
+            db.commit()
+
+    def test_main_airport_is_the_busiest_and_the_places_own_airport_is_kept(self):
+        self.set_passengers(JFK=1000, EWR=5000, MDW=2000, ORD=9000)
+        result = self.run_node()
+        # EWR is the main home airport; JFK stays as the place's own (first in its list)
+        self.assertEqual(result["search_airports"], {"origin": ["CMI", "ORD"],
+                                                    "destination": ["EWR", "JFK", "PHL"]})
+        self.assertEqual(result["options"][0]["airports"], ["ORD", "MDW"])
+
+    def test_own_airport_comes_from_flight_airports_first(self):
+        self.set_passengers(JFK=1000, EWR=5000)
+        constraints = {**TRIP, "destination_place": {**DESTINATION, "flight_airports": ["EWR", "JFK"]}}
+        result = self.run_node(constraints)
+        self.assertEqual(result["search_airports"]["destination"], ["EWR", "PHL"])
+
+    def test_near_empty_airports_are_dropped_unless_the_market_has_nothing_bigger(self):
+        self.set_passengers(MDW=40, ORD=9000)
+        self.assertEqual(self.run_node()["options"][0]["airports"], ["ORD"])
+        self.set_passengers(MDW=40, ORD=60)
+        self.assertEqual(self.run_node()["options"][0]["airports"], ["ORD"])
+
+    def add_near_miss_market(self, fare=170, lat=40.45):
+        """Market 7 (BMI), about 50 km from the origin: 15% cheaper than home in Q1."""
+        self.verified["BMI"] = 7
+        with Session(self.engine) as db:
+            db.add(Airport(iata="BMI", name="BMI", city="Market 7", state="IL",
+                           latitude=lat, longitude=-88, dot_market_id=7))
+            db.add(self.fare_row(7, 2, 1, fare))
+            db.add(self.fare_row(7, 99, 1, 900, passengers=10000))
+            db.commit()
+
+    def test_near_miss_is_searched_but_not_suggested_or_charted(self):
+        self.add_near_miss_market()
+        result = self.run_node()
+        departure = [(o["airports"], o["avg_fare"], o["suggested"])
+                     for o in result["options"] if o["side"] == "departure"]
+        self.assertEqual(departure, [(["MDW", "ORD"], 150, True), (["BMI"], 170, False)])
+        self.assertEqual(result["search_airports"]["origin"], ["CMI", "MDW", "BMI"])
+        self.assertNotIn("BMI", json.dumps(result["chart"]))
+
+    def test_near_miss_needs_to_be_close_and_cheaper_enough(self):
+        self.add_near_miss_market(lat=41.9)  # 15% cheaper but about 210 km away
+        self.assertNotIn("BMI", json.dumps(self.run_node()))
 
     def test_chart_matches_quarterly_means_and_keeps_null_gaps(self):
         with Session(self.engine) as db:
@@ -290,10 +356,23 @@ class FlightTrendsTests(unittest.TestCase):
             {"depart_date": "2099-04-15", "return_date": "2099-04-19"},
             {"depart_date": "2099-04-30", "return_date": "2099-05-04"}])
 
-    def test_flexible_window_discards_stale_fixed_return_according_to_constraints(self):
-        result = self.run_node(self.window(return_date="2099-03-21"))
-        self.assertEqual(result["candidate_dates"][-1],
-                         {"depart_date": "2099-04-30", "return_date": "2099-05-04"})
+    def test_flexible_window_with_fixed_return_departs_before_it(self):
+        # Cheapest quarter (Apr) up to the day before the Apr 20 return; every trip ends Apr 20
+        result = self.run_node(self.window(nights=None, return_date="2099-04-20"))
+        self.assertEqual(result["candidate_dates"], [
+            {"depart_date": "2099-04-01", "return_date": "2099-04-20"},
+            {"depart_date": "2099-04-10", "return_date": "2099-04-20"},
+            {"depart_date": "2099-04-19", "return_date": "2099-04-20"}])
+
+    def test_flexible_window_with_return_and_nights_has_one_implied_departure(self):
+        result = self.run_node(self.window(return_date="2099-04-20", nights=4))
+        self.assertEqual(result["candidate_dates"],
+                         [{"depart_date": "2099-04-16", "return_date": "2099-04-20"}])
+
+    def test_flexible_window_without_return_or_nights_is_empty(self):
+        result = self.run_node(self.window(nights=None))
+        self.assertEqual(result["status"], "empty")
+        self.assertIn("return date or stay length is missing", result["reason"])
 
     def test_one_and_two_day_windows_produce_distinct_valid_pairs(self):
         for last in (1, 2):

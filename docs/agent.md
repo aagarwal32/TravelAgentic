@@ -77,36 +77,62 @@ optional when the app starts; AI calls raise a clear error if it is missing.
 A departure is either an **exact date** (`depart_date`) or a **departure window**
 (`flexible_start` to `flexible_end`). "Sometime in December" means the user can
 leave on *any* day from December 1 to December 31. The window only describes the
-departure; it says nothing about when the trip ends.
+departure; the user can also supply a fixed return date or a number of nights.
+Any departure selected later must satisfy those details too.
 
-A round trip also needs its length. Which card asks for it depends on the departure:
+A round trip needs a return date or a stated stay length. If neither is known,
+an exact departure asks for the return date and a departure window asks for nights:
 
 | Trip | What intake needs | Card asked if missing |
 |---|---|---|
 | One-way | departure date or window | none |
 | Round trip, exact departure date | `return_date` or `trip_nights` (code fills in the other) | "When do you want to come back?" (date picker, from the departure date) |
-| Round trip, departure window | `trip_nights` | "How many nights do you want to stay?" (number, 1 to 30) |
+| Round trip, departure window | `return_date` or `trip_nights`; both are kept if supplied and compatible | "How many nights do you want to stay?" (number, 1 to 30) |
 
-A fixed return date does not fit a departure window: "leave any day in December,
-back on the 15th" rules out most of the window, and the old "latest date you could
-be back by" card only accepted dates on or after the window's end. So a flexible
-round trip stores the length of the stay instead, and later steps search "depart
-any day in the window, return `trip_nights` later". The nights card is a number
-box, so answering it never calls the AI; out-of-range answers show the card again
-with "Enter a number of nights from 1 to 30."
+A window asks for nights, not a return date: a picked return would fix the stay to
+the whole span from the window's start to that date and cut every later departure
+out of the window. Nights keep the departure flexible and give hotels and flight
+trends a trip length. The nights card is a number box, so its answer is saved
+without an AI call; out-of-range answers show the card again with "Enter a number
+of nights from 1 to 30."
+
+A return date the user **states** is still kept. "Sometime in December, return
+December 15" preserves December 1–31 and the December 15 return; it does not ask
+for nights. A fixed return can fall inside the departure window.
+
+For this app, **"return by December 15" means the same exact return date as
+"return on December 15"**. It is not a separate latest-return deadline.
+
+If the user supplies nights instead ("sometime in December, stay 2 nights"),
+intake accepts `trip_nights` without asking a return-date question. Stated nights
+must be 1–30. A window plus return date without nights leaves the length unknown
+until a departure is selected; the code does not invent a duration.
 
 Date arithmetic is done in code, not by the AI: `normalize_dates` in `state.py`
-runs every time trip details are validated, so it also cleans up details saved
-before this rule existed.
+runs every time trip details are validated, including when saved details are
+loaded. It preserves valid window/return combinations and rejects incompatible ones.
 
 - exact date + `trip_nights` → `return_date` = departure + nights
 - exact date + `return_date` → `trip_nights` = nights in between when that is 1 to
   30; a same-day return or a longer stay is still accepted, with no `trip_nights`
-- both given and they disagree → `return_date` wins, `trip_nights` is recalculated
-- a new value for one of them ("actually 6 nights") replaces the value that was
-  derived from the old one
-- departure window + `return_date` → `return_date` is dropped and any saved
-  `trip_nights` is kept
+- exact departure, both given and they disagree → `return_date` wins, `trip_nights`
+  is recalculated
+- exact departure, a new value for one of them ("actually 6 nights") replaces the
+  value that was derived from the old one
+- departure window + `return_date` → both are preserved; the return cannot be
+  before the window starts
+- departure window + `return_date` + `trip_nights` → return minus nights must fall
+  inside the window, including its boundaries; the original window stays saved
+- with a window, editing nights does not erase the return date, and editing the
+  return date does not erase nights; an incompatible update is rejected
+- switching from an exact date to a window drops the saved return date (it belonged
+  to the old date, often derived from it + nights) and keeps the nights, unless the
+  same answer states a return
+
+For example, a December 1–31 window with a December 15 return and 2 nights implies
+a December 13 departure. A December 2 return with 2 nights would require leaving
+November 30, so it is rejected. A January 2 return with 2 nights is valid because
+December 31 is inside the window.
 
 `EXTRACT_PROMPT` only extracts what the user said ("stay 2 nights" → `trip_nights: 2`,
 "for a week" → 7, "a weekend" → 2, "2–3 nights" → 3). It never turns nights into
@@ -165,7 +191,8 @@ no AI and no API calls, and saves the result next to the text the user typed:
 "destination": "Greenville",
 "destination_place": {"id": "us-sc-greenville", "city": "Greenville", "state": "SC",
                       "latitude": 34.8526, "longitude": -82.394,
-                      "airports": ["GSP", "AVL"], "dot_market_id": 31871}
+                      "airports": ["GSP", "AVL"], "dot_market_id": 31871,
+                      "flight_airports": ["GSP", "AVL"]}
 ```
 
 Hotel search accepts this saved place, and fare-trend functions accept its market ID.
@@ -179,6 +206,9 @@ search retain the planning contracts described below.
   closest airport can be a general-aviation field that DOT puts in no market (Meacham,
   FTW, for Fort Worth; BJC for Denver), so it is skipped for the market but still
   listed in `airports`.
+  `flight_airports` keeps the subset with a DOT market, closest first. Flight search
+  uses only its first entry (the place's own airport) when flight trends has no
+  airports; older saved places without that field use the first saved airport.
   This deliberately differs from Issue #21's literal closest-airport rule. Approval
   of this interpretation is still required; the behavior is preserved in this change.
 - Only code fills `*_place`. The AI never sees or sets them, and changing the city text
@@ -255,9 +285,10 @@ intake done ─┬─ fly ──► flight_trends ─► flight_search ─┐
 | `flight_search.py` | `flight_offers` | `FlightOffers` | Duffel | `tests/test_flight_search.py` |
 | `hotel_search.py` | `hotel_options` | `HotelOptions` | LiteAPI | `tests/test_hotel_search.py` |
 
-`flight_trends` implements local historical analysis. `flight_search` remains a
-stub, and `hotel_search` computes its input dates, rooms and budget before returning
-an empty stub result. Their contracts and consumers are unchanged by Issue #34.
+`flight_trends` implements local historical analysis, and `flight_search` implements
+live searches using the guarded Duffel client and helpers in `services/flight_service.py`.
+`hotel_search` computes its input dates, rooms and budget before returning an empty
+stub result.
 `tests/planning_fixtures.py` has sample trips and `assert_contract`, which checks
 status, required top-level keys, allowed keys and non-success reasons. The node
 tests also assert every successful payload field and its nested contract.
@@ -268,29 +299,87 @@ tests also assert every successful payload field and its nested contract.
   e.g. flights on a driving trip) or `"empty"` (it ran and found nothing), plus a
   `reason` when it isn't `"ok"`. An `"ok"` result has every key of its contract.
 - **Fallbacks:** each node works without the result before it.
-  - Flights without trends: the places' own airports, on the trip's dates.
+  - Flights without trends search each place's own airport on the trip's dates.
   - Hotels without flights: the full budget, and dates from the trip.
 - **Data only:** prices come from Table 6, Duffel or LiteAPI, never from the AI. Live
   results have `fetched_at`. Dates are ISO strings and money is USD.
-- **Window → dates:** `flight_trends` turns a departure window into up to 3 concrete
-  departure dates (`candidate_dates`), each returning `trip_nights` later. Flights and
-  hotels use those dates.
+- **Window → dates:** `flight_trends` produces `candidate_dates` that satisfy the
+  original window and the supplied return details:
+  - Nights only: up to 3 departures inside the window, returning `trip_nights` later.
+  - Fixed return only: up to 3 departures inside the window and before the fixed
+    return, all using that same return date.
+  - Fixed return and nights: the single departure given by return minus nights.
+  Flights and hotels use those concrete dates.
+- **Flight search dates:** flight search validates trend candidates and uses them as seeds for
+  `_initial_departure_dates()` in `services/flight_service.py`. The helper chooses
+  at most 3 initial dates; exact departures use one search date. One-way flight
+  searches never add a return leg, even with nights for hotels.
+  - Flexible choices minimize exposure to actual/observed nationwide US federal
+    holidays and their adjacent days on departure and return, using the
+    [OPM calendar rules](https://www.opm.gov/policy-data-oversight/pay-leave/federal-holidays/).
+    Observed New Year's Day can affect the preceding December. A holiday-only
+    window remains searchable, and explicit dates are never shifted.
+  - The least holiday-affected dates are divided into up to 3 chronological groups.
+    Each group prefers dates outside March 8–24 (a coarse spring-break heuristic,
+    not a school calendar), then Tue/Wed/Sat departures, then valid trend seeds.
+    Ties favor proximity to the window's start, midpoint or end, then earlier dates.
+    Duffel fares from those probes determine which neighboring dates to try next.
 
 **What each node reads:**
 
 - **`flight_trends`**: the places' DOT markets and coordinates, the dates, budget and
   travelers. It tells flights where and when to search (`search_airports`,
   `candidate_dates`).
-- **`flight_search`**: `search_airports` and `candidate_dates` (fallback: the places'
-  airports and the trip's dates), travelers and `max_connections`. All Duffel calls
-  go through one guarded client limited by `DUFFEL_DAILY_SEARCH_LIMIT`. It writes a
-  shortlist of about 5 offers chosen in code, each with measured `metrics`, and
-  `cheapest_total`.
+- **`flight_search`**: `search_airports` and `candidate_dates` (fallback: each place's
+  own airport and the trip's dates), travelers and `max_connections`. It searches only
+  the airports trends lists (trends decides; flight search orders the searches), and
+  marks an offer `from_alternative_airport` when its airport is in a trends option
+  (suggested alternative or near miss). All Duffel calls
+  go through one guarded client limited by `DUFFEL_DAILY_SEARCH_LIMIT`. It writes
+  up to 20 shortlisted offers with measured `metrics` and `cheapest_total`, and a
+  `searches` list with each search's airports, dates, kind (`home`, `alternative`,
+  `near_miss`), offer count, cheapest price or error, so a route with no flights is
+  visible.
+  See [flights.md](flights.md) for setup, ranking and a test-mode run.
+  - Duplicate airports/dates and identical origin/destination airport pairs are
+    excluded. Routes are searched in priority order: (1) home to home, main airports
+    first, then each place's own airport; (2) an alternative against the other
+    side's main airport; (3) alternative to alternative; (4) a near miss against the
+    other side's main airport only.
+  - **Probe, widen, extras.** The main home route is searched on up to three
+    initial dates; the cheapest becomes the date for every other route. While
+    searches remain: probe dates within 5% of the cheapest, then the days next to
+    the chosen date on the cheapest route, then the cheapest alternative routes to
+    the other side's remaining home airport. Trend candidates must satisfy the
+    original departure bounds, return and nights.
+  - `MAX_SEARCHES_PER_TRIP = 10` in `nodes/flight_search.py` caps each node run at
+    ten guarded search attempts, in addition to the client's daily limit. Failed or
+    blocked attempts consume a slot. The order means the cap cuts extras and the
+    lowest-priority routes first; reaching it while routes remain reports
+    `"per-trip search limit reached"`. Destin → Tampa on an exact date takes 2
+    searches.
+  - A near miss's offers are shortlisted only when its cheapest live offer beats
+    the home airports' cheapest (or the home airports found nothing).
+  - Each search requests all returned offers. Expired, non-USD, malformed and
+    incomplete offers are excluded; the combined results are deduplicated by offer
+    ID and checked for expiry again before shortlisting.
+  - The shortlist includes the cheapest, fastest, best balance and cheapest
+    eligible trends alternative when available. Ranking weighs price, duration,
+    stops and layovers. Similar low-risk itineraries can displace offers with
+    overnight connections or airport changes. Results are sorted by fare.
+  - `searches_made` counts calls to the guarded search helper, including failed or
+    blocked attempts. The daily HTTP allowance is maintained by the client per
+    process. The node continues after individual search failures and stops if
+    credentials or the allowance block further requests. It reports failures in
+    `reason` and retains usable offers with `"ok"` status. A search with no usable
+    offers returns `"empty"`, so hotels retain the full budget.
 - **`hotel_search`**: the stay dates (from the cheapest shortlisted flight, else trends'
   first candidate dates, else the trip's own dates), rooms (one per 2 travelers) and
   the hotel budget (budget minus `cheapest_total`). With no stay length (no
   `trip_nights` and no return date, e.g. a one-way trip), it is `"skipped"`. These
-  inputs already work in the stub.
+  inputs already work in the stub. Without flight/trend dates, a window plus
+  return and nights uses return minus nights for check-in. Otherwise it uses the
+  exact departure or window start, with checkout from the return date or nights.
 
 
 ## Issue #34: flight trends and alternative airports
@@ -343,6 +432,14 @@ $100 route can replace $85, but cannot replace $84; the distance reduction must
 also reach 20%. Comparisons use unrounded values. Named constants define the
 radius and percentage thresholds; dollars are rounded only for presentation.
 
+**Near miss.** Each side can also have one near miss, listed in `options` with
+`suggested: false`: the closest other candidate within 150 km that is cheaper than
+home but misses the 20% rule, and is at least 10% cheaper or saves at least $75 for
+the trip (fare savings × travelers × directions). It needs a home fare. It is
+searched by flight search but not charted or used for candidate dates; the reply
+mentions it only when live prices confirm it. Colorado Springs → Denver (18.3%,
+115 km) and Santa Barbara → Los Angeles (18.8%, 125 km) are near misses.
+
 ### The five decisions
 
 1. **Dates:** preserve an exact normalized departure/return pair. For a flexible
@@ -367,15 +464,19 @@ radius and percentage thresholds; dollars are rounded only for presentation.
    `"not a flying trip"` and `"origin or destination not resolved to a place"`.
    Skip before accessing local data. Completed analysis is `ok` even without fare
    history. Required-data access failures produce `empty` with a reason, including
-   database failures and missing, unreadable or malformed required Table 1a
-   metadata; programming errors are not hidden by a blanket exception handler. Non-success results do not claim a completed analysis.
-4. **Search airports:** a local airport row must agree with a market mapping from
-   local Table 1a or the loader's checked `MARKET_FIXES`, with `RENAMED_CODES`
-   aliases applied. Home airports precede the selected alternative's airports;
-   each group is sorted by city-to-airport distance and IATA, then deduplicated.
-   Without a home market, only verified place-associated codes enter the home
-   group. The same eligibility rule governs candidate distances and search lists.
-   A non-null market or membership in `Place.airports` alone is insufficient.
+   database failures and an airports table without verified market sources (an
+   older load: rerun `python -m scripts.ingest_locations`); programming errors are not hidden by a blanket exception handler. Non-success results do not claim a completed analysis.
+4. **Search airports:** an airport is eligible only when its market came from
+   Table 1a or the loader's checked `MARKET_FIXES` (`Airport.market_source`
+   `"table1a"`/`"fixed"`, recorded by `ingest_locations`; a Table 6 name match is
+   not trusted). Each market's airports are ranked by `Airport.passengers` (Table 1a
+   passengers/day, largest first), then distance; airports under 100/day are
+   dropped while their market has a bigger one. `search_airports` per side lists
+   the home market's main airport, the place's own airport (first of
+   `flight_airports`) when different, then the alternative's and the near miss's
+   main airport. Without a home market, only verified place-associated codes enter
+   the home group. A non-null market or membership in `Place.airports` alone is
+   insufficient. `options[].airports` lists the whole market, main first.
 5. **Budget:** estimate flights using the home route's selection fare times the
    number of travelers, multiplied by two for a round trip and one for one-way.
    Round-trip doubling is an estimate. `typical_trip_total` is rounded to cents;
@@ -399,10 +500,9 @@ The separate service heuristic `straight_line_km * 1.3 / 80` gives approximate
 driving hours; `RouteOption` has no driving-time field, so the node does not extend
 the contract or report ground-transport costs.
 
-`flight_search.py`, `hotel_search.py`, `state.py` and their existing schemas remain
-unchanged. The current flight-search stub accepts state containing the result but
-does not yet execute airport/date searches. Contract tests cover its compatibility;
-they do not claim live Duffel searches. The existing `hotel_search.stay_dates`
+Issue #34 left the flight-search node as a compatible stub. Issue #35 now executes
+airport/date searches using the trend result as input; see [flights.md](flights.md).
+The existing `hotel_search.stay_dates`
 consumes the first candidate from an `ok` trend result, unless concrete flight
 results take precedence. Candidate dates are ISO strings; one-way null returns
 remain compatible with the hotel's existing no-stay behavior.
@@ -462,3 +562,19 @@ JFK, HPN, ISP, SWF at arrival. The exact January 15–22 pair was retained, and 
 home flight estimate was $1,375.79 with `fits: true` against $2,000. The output
 passed `assert_contract`, preserved the input state and left both data hashes
 unchanged. The JSON includes all four chart quarters and raw service diagnostics.
+
+## Refreshing a selected flight offer (Issue #35)
+
+`services.flight_service.refresh_offer(offer_id, travelers, *, from_alternative_airport=False)`
+fetches one offer's current details with `GET /air/offers/{offer_id}` through the
+same guarded Duffel client. Pass the original traveler count so per-person pricing
+is calculated correctly, and the original alternative-airport flag when applicable.
+It returns a newly parsed `FlightOffer` with the latest total, expiry, itinerary and
+baggage metrics. Selection tags start empty because updated prices require reranking.
+
+Each invocation with valid inputs makes one counted HTTP attempt, with no automatic
+retry. Invalid inputs raise `ValueError` before a request. Missing credentials or an
+already-reached daily limit block the request before an HTTP attempt is counted.
+Unavailable, expired, non-USD, partial or malformed offers raise
+`DuffelError`. This is an explicit service helper; page reloads and graph execution
+do not invoke it automatically.
