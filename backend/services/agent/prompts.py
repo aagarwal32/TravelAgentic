@@ -128,7 +128,17 @@ Return ONLY a JSON object with the fields the answers state (a "patch").
 - max_connections: "nonstop" -> 0, "one stop max" -> 1.
 - activities: a list of short lowercase tags, e.g. "beachy stuff and some bars" ->
   ["beach", "nightlife"]. When answering the activities question, return the full list.
-- hotel_preferences: short text in the user's words, e.g. "clean, cheap, near downtown".
+- hotel_amenities: requested hotel features, as tags from this list only:
+  wifi, air conditioning, 24-hour front desk, laundry, parking, airport shuttle,
+  ev charging, breakfast, kitchen, restaurant, bar, pool, gym, hot tub, spa,
+  pet friendly, accessible, non-smoking, family rooms, luggage storage.
+  Map "free parking" to "parking", "wi-fi" to "wifi", and "can I bring my dog"
+  to "pet friendly". Only include features the user wants: "no pool needed"
+  does not request a pool.
+- hotel_preferences: other hotel wishes as short text in the user's words,
+  including price, location, cleanliness, and features outside the tag list.
+  One answer can fill both fields. If the user only asks for supported amenities,
+  return hotel_amenities and omit hotel_preferences.
 
 # Dates
 - Resolve relative dates ("next Friday", "Dec 20") with "today". A date without a
@@ -186,6 +196,14 @@ answers: [{"field": "activities", "question": "Any activities you're interested 
 "text": "beachy stuff, maybe some bars"}, {"field": "hotel_preferences", "question":
 "Anything you want in a hotel?", "text": "nothing really"}]
 {"activities": ["beach", "nightlife"]}
+
+answers: [{"field": "hotel_preferences", "question": "Anything you want in a hotel?",
+"text": "cheap, free parking, needs wifi, near downtown, and my dog is coming"}]
+{"hotel_amenities": ["parking", "wifi", "pet friendly"], "hotel_preferences": "cheap, near downtown"}
+
+answers: [{"field": "hotel_preferences", "question": "Anything you want in a hotel?",
+"text": "parking and wifi"}]
+{"hotel_amenities": ["parking", "wifi"]}
 """
 
 

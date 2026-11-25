@@ -1,5 +1,6 @@
 import json
 import os
+import re
 import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -22,7 +23,7 @@ from services.agent.nodes.clarify import (COULD_NOT_UNDERSTAND, ERROR_TEXT, PLAC
                                           build_card, merge_answers)
 from services.agent.nodes.extract import parse_json_object
 from services.agent.prompts import EXTRACT_PROMPT
-from services.agent.state import REQUIRED, TripConstraints, compute_missing
+from services.agent.state import AMENITY_TAGS, OPTIONAL, REQUIRED, TripConstraints, compute_missing
 from services.location_service import LocationDataMissing
 
 COMPLETE = dict(origin='Chicago', destination='New York', mode='fly',
@@ -275,6 +276,68 @@ class TripLoopTests(unittest.TestCase):
         self.assertNotIn('needs_car', seen)
         self.assertNotIn('driver_age', seen)
         self.assertEqual(self.constraints()['mode'], 'drive')
+
+    def test_one_hotel_answer_saves_both_fields_in_one_call(self):
+        self.start(COMPLETE)
+        self.ai.reset_mock()
+        reply = {'hotel_amenities': ['parking', 'wifi', 'pet friendly'],
+                 'hotel_preferences': 'cheap, near downtown'}
+        done = self.answer({'answers': {'hotel_preferences': {
+            'text': 'cheap, free parking, needs wifi, near downtown, and my dog is coming'}}},
+            ai_patch=reply)
+        self.assertIsNone(done)
+        self.ai.assert_called_once()
+        for key, value in reply.items():
+            self.assertEqual(self.constraints()[key], value)
+
+    def test_amenity_tags_are_normalized_and_deduplicated(self):
+        tags = [' WIFI ', 'wifi', 'PARKING', 'unknown', 'Pet Friendly', '']
+        self.assertEqual(TripConstraints(hotel_amenities=tags).hotel_amenities,
+                         ['wifi', 'parking', 'pet friendly'])
+
+    def test_a_single_amenity_string_is_saved_as_a_list(self):
+        self.assertEqual(TripConstraints(hotel_amenities=' WiFi ').hotel_amenities, ['wifi'])
+        self.assertIsNone(TripConstraints(hotel_amenities='recording studio').hotel_amenities)
+
+    def test_empty_and_invalid_amenity_lists_save_none(self):
+        for tags in ([], ['unknown', '  '], [47, False]):
+            with self.subTest(tags=tags):
+                result = TripConstraints(hotel_amenities=tags).model_dump(mode='json')
+                self.assertIsNone(result['hotel_amenities'])
+
+    def test_amenities_only_answer_does_not_mark_hotel_card_skipped(self):
+        self.start(COMPLETE)
+        self.assertIsNone(self.answer({'answers': {'hotel_preferences': {'text': 'parking and wifi'}}},
+                                      ai_patch={'hotel_amenities': ['parking', 'wifi']}))
+        self.assertEqual(self.constraints()['hotel_amenities'], ['parking', 'wifi'])
+        self.assertIsNone(self.constraints()['hotel_preferences'])
+        self.assertNotIn('hotel_preferences', self.graph.get_state(self.config).values['skipped'])
+
+    def test_unsupported_hotel_wish_can_still_be_saved_as_text(self):
+        self.start(COMPLETE)
+        self.answer({'answers': {'hotel_preferences': {'text': 'near downtown, recording studio'}}},
+                    ai_patch={'hotel_amenities': [], 'hotel_preferences': 'near downtown, recording studio'})
+        self.assertIsNone(self.constraints()['hotel_amenities'])
+        self.assertEqual(self.constraints()['hotel_preferences'], 'near downtown, recording studio')
+
+    def test_amenities_have_no_separate_card(self):
+        stack = self.start(COMPLETE)
+        fields = [card['field'] for card in stack['cards']]
+        self.assertNotIn('hotel_amenities', fields)
+        self.assertNotIn('hotel_amenities', OPTIONAL)
+        self.assertNotIn('hotel_amenities', QUESTIONS)
+        self.assertIn('hotel_preferences', fields)
+
+    def test_amenities_in_first_request_already_answer_hotel_card(self):
+        stack = self.start({**COMPLETE, 'hotel_amenities': ['wifi']})
+        self.assertNotIn('hotel_preferences', [card['field'] for card in stack['cards']])
+        self.assertIsNone(self.answer({'answers': {}}))
+        self.assertNotIn('hotel_preferences', self.graph.get_state(self.config).values['skipped'])
+
+    def test_prompt_lists_exactly_the_supported_amenity_tags(self):
+        match = re.search(r'- hotel_amenities:[^\n]*:\n([^.]+)\.\n', EXTRACT_PROMPT)
+        self.assertIsNotNone(match)
+        self.assertEqual([tag.strip() for tag in match.group(1).split(',')], AMENITY_TAGS)
 
     def test_drift_guard(self):
         for field in TripConstraints.model_fields:
