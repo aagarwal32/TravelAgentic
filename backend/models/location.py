@@ -9,7 +9,7 @@ Sources (see docs/data.md):
   5-year population table B01003, with city-center coordinates from the USGS GNIS
   where it has them. Public domain.
 - airports: OurAirports airports.csv (public domain), linked to DOT city markets
-  with DOT Consumer Airfare Report Table 1a.
+  with DOT Consumer Airfare Report Table 1a, which also gives each airport's size.
 """
 
 from sqlalchemy import Float, Index, Integer, String
@@ -61,3 +61,11 @@ class Airport(Base):
     # The DOT Table 6 city market this airport belongs to (DFW and DAL are both
     # "Dallas/Fort Worth, TX"). None when DOT has no market for it.
     dot_market_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
+    # How dot_market_id was found: "table1a" (DOT's own assignment), "fixed" (hand-checked
+    # MARKET_FIXES) or "name" (Table 6 market name match). Only the first two are trusted
+    # for flight search. None when there is no market.
+    market_source: Mapped[str | None] = mapped_column(String, nullable=True)
+    # Average passengers/day on this airport's Table 1a routes (2022+). It ranks airports
+    # inside one market (BOS over PVD over MHT); Table 1a only covers DOT's larger routes,
+    # so it undercounts real traffic. None when the airport isn't in Table 1a.
+    passengers: Mapped[float | None] = mapped_column(Float, nullable=True)

@@ -75,9 +75,11 @@ DATASETS = [
     {
         "name": "dot_table1a_airports",
         # DOT Consumer Airfare Report Table 1a (airport-pair markets), grouped by the API into
-        # one row per airport pair with each airport's DOT city market id (2022+, ~90 KB).
-        # It links airports to the market ids Table 6 uses. New quarters change it: no checksum.
-        "url": "https://data.transportation.gov/resource/tfrh-tu9e.csv?$select=airport_1,citymarketid_1,city1,airport_2,citymarketid_2,city2,max(year)%20as%20last_year&$where=year%3E=2022&$group=airport_1,citymarketid_1,city1,airport_2,citymarketid_2,city2&$order=airport_1,airport_2&$limit=100000",
+        # one row per airport pair with each airport's DOT city market id (2022+, ~120 KB).
+        # It links airports to the market ids Table 6 uses, and its summed passengers/day
+        # (with the number of quarters) rank airports inside a market. New quarters change
+        # it: no checksum.
+        "url": "https://data.transportation.gov/resource/tfrh-tu9e.csv?$select=airport_1,citymarketid_1,city1,airport_2,citymarketid_2,city2,max(year)%20as%20last_year,sum(passengers)%20as%20passengers,count(*)%20as%20quarters&$where=year%3E=2022&$group=airport_1,citymarketid_1,city1,airport_2,citymarketid_2,city2&$order=airport_1,airport_2&$limit=100000",
         "filename": "dot_table1a_airports.csv",
         "sha256": None,
     },

@@ -183,11 +183,14 @@ class RouteTrend(TypedDict):
 class RouteOption(TypedDict):
     route: str
     side: Literal["departure", "arrival"]   # which end of the trip uses the other airport
-    airports: list[str]              # the alternative market's airports: ["MDW", "ORD"]
+    airports: list[str]              # that market's airports, main (busiest) first: ["ORD", "MDW"]
     distance_km: float               # from the place's center to the closest of them
     avg_fare: Optional[float]
     savings_each_way: Optional[float]   # vs the home route; None if either has no data
-    suggested: bool                  # cheap enough to suggest (and to chart)
+    # True: the alternative (>= 20% cheaper), suggested and charted. False: a near miss
+    # (within 150 km, 10-20% cheaper or >= $75 saved per trip), only searched; the reply
+    # mentions it when live prices beat the home airports. At most one of each per side.
+    suggested: bool
 
 
 class ChartSeries(TypedDict):
@@ -204,7 +207,9 @@ class FareChart(TypedDict):
 
 
 class SearchAirports(TypedDict):
-    origin: list[str]                # home airports first, then suggested alternatives
+    # Home market's main airport, the place's own airport if different, then the
+    # alternative's and the near miss's main airport
+    origin: list[str]
     destination: list[str]
 
 
@@ -269,6 +274,7 @@ class FlightSearchLog(TypedDict):
     destination: str
     depart_date: str
     return_date: Optional[str]       # None for one-way
+    kind: Literal["home", "alternative", "near_miss"]   # which airports the route uses
     offers: int                      # usable offers it returned (0 when it failed)
     cheapest_total: Optional[float]
     error: Optional[str]             # the failure, without secrets; None when it worked

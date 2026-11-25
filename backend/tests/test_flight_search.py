@@ -23,6 +23,20 @@ WINDOW_TRIP = {**BASE_WINDOW_TRIP,
                "origin_place": TRIP["origin_place"], "destination_place": TRIP["destination_place"]}
 
 
+FULL_TRENDS = {"status": "ok", "search_airports": {
+    # main, own, alternative, near miss on each side
+    "origin": ["ORD", "MDW", "MKE", "RFD"], "destination": ["JFK", "LGA", "EWR", "HPN"],
+}, "options": [{"side": "departure", "airports": ["MKE"], "suggested": True},
+               {"side": "departure", "airports": ["RFD"], "suggested": False},
+               {"side": "arrival", "airports": ["EWR"], "suggested": True},
+               {"side": "arrival", "airports": ["HPN"], "suggested": False}]}
+PRIORITY_ORDER = [
+    ("ORD", "JFK", "home"), ("ORD", "LGA", "home"), ("MDW", "JFK", "home"), ("MDW", "LGA", "home"),
+    ("MKE", "JFK", "alternative"), ("ORD", "EWR", "alternative"), ("MKE", "EWR", "alternative"),
+    ("RFD", "JFK", "near_miss"), ("ORD", "HPN", "near_miss"),
+]
+
+
 class FlightSearchTests(unittest.TestCase):
     """Offline orchestration: input selection, guarded searches, and result contracts."""
 
@@ -54,6 +68,13 @@ class FlightSearchTests(unittest.TestCase):
             "expires_at": "2099-02-01T12:30:00Z", "slices": [outbound, inbound],
         }
         self.offer = _parse_offer(self.raw_offer, 3, now=self.now)
+
+    def offer_from(self, origin, amount, offer_id):
+        """self.offer from another origin airport at another price."""
+        offer = deepcopy(self.offer)
+        offer.update(offer_id=offer_id, total_amount=amount, per_person=round(amount / 3, 2))
+        offer["outbound"]["origin"] = offer["inbound"]["destination"] = origin
+        return offer
 
     def run_node(self, constraints, **results):
         result = flight_search(state(constraints, **results))["flight_offers"]
@@ -105,14 +126,34 @@ class FlightSearchTests(unittest.TestCase):
         }, "options": [{"side": "departure", "airports": ["MKE"]},
                        {"side": "arrival", "airports": ["EWR"]}]}
         result = self.run_node(TRIP, flight_trends=trends)
-        self.assertEqual(result["searches_made"], 6)
-        pairs = {(item.args[0], item.args[1]): item.kwargs["from_alternative_airport"]
-                 for item in self.search.call_args_list}
-        self.assertEqual(pairs, {("ORD", "JFK"): False, ("ORD", "EWR"): True,
-                                 ("MDW", "JFK"): False, ("MDW", "EWR"): True,
-                                 ("MKE", "JFK"): True, ("MKE", "EWR"): True})
+        pairs = [((item.args[0], item.args[1]), item.kwargs["from_alternative_airport"])
+                 for item in self.search.call_args_list]
+        # Alternatives are tried against the other side's main airport only (not MDW -> EWR)
+        self.assertEqual(pairs, [(("ORD", "JFK"), False), (("MDW", "JFK"), False),
+                                 (("MKE", "JFK"), True), (("ORD", "EWR"), True), (("MKE", "EWR"), True)])
+        self.assertEqual(result["searches_made"], 5)
 
-    def test_per_trip_cap_keeps_home_dates_first_and_preserves_an_alternative(self):
+    def test_exact_date_searches_every_route_once_in_priority_order(self):
+        result = self.run_node(TRIP, flight_trends=FULL_TRENDS)
+        self.assertEqual([(item.args[0], item.args[1], item.kwargs["from_alternative_airport"])
+                          for item in self.search.call_args_list],
+                         [(o, d, kind != "home") for o, d, kind in PRIORITY_ORDER])
+        self.assertEqual([(log["origin"], log["destination"], log["kind"]) for log in result["searches"]],
+                         PRIORITY_ORDER)
+        self.assertTrue(all(item.args[2] == date(2099, 3, 10) for item in self.search.call_args_list))
+        self.assertEqual(result["reason"], "no usable flight offers found")  # all 9 fit in the cap
+
+    def test_cap_cuts_the_lowest_priority_routes_first(self):
+        result = self.run_node(WINDOW_TRIP, flight_trends=FULL_TRENDS)
+        self.assertEqual(result["searches_made"], MAX_SEARCHES_PER_TRIP)
+        self.assertEqual(self.search.call_count, 10)
+        tried = [(item.args[0], item.args[1]) for item in self.search.call_args_list]
+        # 3 probes on the main route, then the 7 next routes; ORD -> HPN is cut
+        self.assertEqual(tried[:3], [("ORD", "JFK")] * 3)
+        self.assertEqual(tried[3:], [(o, d) for o, d, _ in PRIORITY_ORDER[1:8]])
+        self.assertEqual(result["reason"], "per-trip search limit reached")
+
+    def test_window_probes_dates_then_widens_on_the_best_date_then_tries_neighbours(self):
         trends = {"status": "ok", "search_airports": {
             "origin": ["ORD", "MKE"], "destination": ["JFK", "EWR"],
         }, "options": [{"side": "departure", "airports": ["MKE"]},
@@ -123,29 +164,64 @@ class FlightSearchTests(unittest.TestCase):
                 self.search.return_value = offers
                 result = self.run_node(WINDOW_TRIP, flight_trends=trends)
                 self.assertEqual(result["status"], expected_status)
-                self.assertEqual(result["searches_made"], MAX_SEARCHES_PER_TRIP)
-                self.assertEqual(self.search.call_count, 6)
-                self.assertEqual(result["reason"], "per-trip search limit reached")
                 tried = [item.args[:3] for item in self.search.call_args_list]
-                self.assertEqual(tried[:3], [
+                self.assertEqual(tried[:6], [
                     ("ORD", "JFK", date(2099, 3, 3)),
                     ("ORD", "JFK", date(2099, 3, 17)),
                     ("ORD", "JFK", date(2099, 3, 31)),
+                    ("MKE", "JFK", date(2099, 3, 3)),
+                    ("ORD", "EWR", date(2099, 3, 3)),
+                    ("MKE", "EWR", date(2099, 3, 3)),
                 ])
                 if offers:
-                    self.assertEqual(tried[3:], [
-                        ("ORD", "JFK", date(2099, 3, 2)),
-                        ("ORD", "JFK", date(2099, 3, 4)),
-                        ("ORD", "EWR", date(2099, 3, 3)),
-                    ])
+                    # Equal prices: the main route and the earliest date win; then its neighbours
+                    self.assertEqual(tried[6:], [("ORD", "JFK", date(2099, 3, 2)),
+                                                 ("ORD", "JFK", date(2099, 3, 4))])
                     self.assertEqual(result["cheapest_total"], 420.0)
-                    self.assertEqual(result["shortlist"][0]["offer_id"], "off_example")
                 else:
-                    self.assertEqual(tried[3:], [
-                        ("ORD", "EWR", date(2099, 3, 3)),
-                        ("MKE", "JFK", date(2099, 3, 3)),
-                        ("MKE", "EWR", date(2099, 3, 3)),
-                    ])
+                    self.assertEqual(len(tried), 6)  # nothing found: no extras to choose
+                self.assertNotIn("per-trip search limit reached", result.get("reason", ""))
+
+    def test_near_tie_probe_date_is_tried_on_the_cheapest_route(self):
+        trends = {"status": "ok", "search_airports": {"origin": ["ORD", "MKE"], "destination": ["JFK"]},
+                  "options": [{"side": "departure", "airports": ["MKE"]}]}
+        prices = {("ORD", date(2099, 3, 3)): 420.0, ("ORD", date(2099, 3, 17)): 410.0,
+                  ("ORD", date(2099, 3, 31)): 500.0, ("MKE", date(2099, 3, 17)): 300.0}
+
+        def search(origin, destination, depart, *args, **kwargs):
+            price = prices.get((origin, depart))
+            return [self.offer_from(origin, price, f"off_{origin}_{depart.day}")] if price else []
+
+        self.search.side_effect = search
+        self.run_node(WINDOW_TRIP, flight_trends=trends)
+        tried = [item.args[:3] for item in self.search.call_args_list]
+        self.assertEqual(tried[3], ("MKE", "JFK", date(2099, 3, 17)))
+        # Mar 3 ($420) is within 5% of Mar 17 ($410); MKE -> JFK became the cheapest route
+        self.assertEqual(tried[4:], [("MKE", "JFK", date(2099, 3, 3)),
+                                     ("MKE", "JFK", date(2099, 3, 16)),
+                                     ("MKE", "JFK", date(2099, 3, 18))])
+
+    def test_cheapest_alternative_is_also_tried_to_the_places_own_airport(self):
+        trends = {"status": "ok", "search_airports": {"origin": ["ORD", "MKE"], "destination": ["JFK", "LGA"]},
+                  "options": [{"side": "departure", "airports": ["MKE"]}]}
+        self.search.return_value = [self.offer]
+        result = self.run_node(TRIP, flight_trends=trends)
+        self.assertEqual([item.args[:2] for item in self.search.call_args_list],
+                         [("ORD", "JFK"), ("ORD", "LGA"), ("MKE", "JFK"), ("MKE", "LGA")])
+        self.assertEqual(result["searches"][-1]["kind"], "alternative")
+
+    def test_near_miss_offers_are_kept_only_when_they_beat_the_home_airports(self):
+        trends = {"status": "ok", "search_airports": {"origin": ["ORD", "RFD"], "destination": ["JFK"]},
+                  "options": [{"side": "departure", "airports": ["RFD"], "suggested": False}]}
+        for near_price, shown in ((300.0, True), (500.0, False)):
+            with self.subTest(near_price=near_price):
+                self.search.reset_mock()
+                self.search.side_effect = lambda origin, *args, **kwargs: [
+                    self.offer_from(origin, 420.0 if origin == "ORD" else near_price, f"off_{origin}")]
+                result = self.run_node(TRIP, flight_trends=trends)
+                self.assertEqual([log["kind"] for log in result["searches"]], ["home", "near_miss"])
+                self.assertEqual("off_RFD" in {o["offer_id"] for o in result["shortlist"]}, shown)
+                self.assertEqual(result["cheapest_total"], 300.0 if shown else 420.0)
 
     def test_fallback_skips_airports_without_a_dot_market(self):
         trip = {**TRIP, "origin_place": {**TRIP["origin_place"], "airports": ["FTW", "DFW"],
@@ -156,11 +232,11 @@ class FlightSearchTests(unittest.TestCase):
 
     def test_flexible_followups_use_cheapest_probe_and_preserve_stay_length(self):
         cheaper = {**self.offer, "offer_id": "off_cheaper", "total_amount": 210.0}
-        self.search.side_effect = [[self.offer], [cheaper], [], [], [], []]
+        self.search.side_effect = [[self.offer], [cheaper], [], [], []]
         result = self.run_node(WINDOW_TRIP)
         self.assertEqual(result["cheapest_total"], 210.0)
         followups = self.search.call_args_list[3:]
-        self.assertEqual([item.args[2].day for item in followups], [16, 18, 15])
+        self.assertEqual([item.args[2].day for item in followups], [16, 18])
         self.assertTrue(all((item.kwargs["return_date"] - item.args[2]).days == 2 for item in followups))
 
     def test_only_trends_airports_are_searched(self):
@@ -186,15 +262,6 @@ class FlightSearchTests(unittest.TestCase):
         self.assertTrue(all(not item.kwargs["from_alternative_airport"]
                             for item in self.search.call_args_list))
 
-    def test_fixed_dates_try_trends_alternative_before_home_pairs_fill_budget(self):
-        trends = {"status": "ok", "search_airports": {
-            "origin": ["ORD", "MDW", "MSN"], "destination": ["JFK", "LGA", "EWR"],
-        }, "options": [{"side": "departure", "airports": ["MSN"]}]}
-        result = self.run_node(TRIP, flight_trends=trends)
-        self.assertEqual(result["searches_made"], MAX_SEARCHES_PER_TRIP)
-        self.assertEqual([item.args[:2] for item in self.search.call_args_list[:2]],
-                         [("ORD", "JFK"), ("MSN", "JFK")])
-
     def test_failed_sixth_attempt_counts_and_stops_without_a_seventh_call(self):
         self.search.side_effect = [[] for _ in range(5)] + [DuffelSearchBlocked("Duffel daily search limit reached")]
         trends = {"status": "ok", "search_airports": {
@@ -211,9 +278,10 @@ class FlightSearchTests(unittest.TestCase):
             "origin": ["ORD", "ORD", "MDW", "JFK"], "destination": ["ORD", "JFK", "EWR", "EWR"]}}
         result = self.run_node(TRIP, flight_trends=trends)
         pairs = [(item.args[0], item.args[1]) for item in self.search.call_args_list]
-        self.assertEqual(result["searches_made"], 6)
-        self.assertEqual(len(pairs), 6)
-        self.assertEqual(len(set(pairs)), 6)
+        # 3 x 3 home airports minus ORD -> ORD and JFK -> JFK
+        self.assertEqual(result["searches_made"], 7)
+        self.assertEqual(len(pairs), 7)
+        self.assertEqual(len(set(pairs)), 7)
         self.assertTrue(all(origin != destination for origin, destination in pairs))
 
     def test_trends_candidate_dates_seed_calendar_probes_and_respect_stay_length(self):
@@ -339,10 +407,10 @@ class FlightSearchTests(unittest.TestCase):
         result = self.run_node(TRIP, flight_trends=trends)
         self.assertEqual(result["searches"], [
             {"origin": "ORD", "destination": "JFK", "depart_date": "2099-03-10",
-             "return_date": "2099-03-14", "offers": 0, "cheapest_total": None,
+             "return_date": "2099-03-14", "kind": "home", "offers": 0, "cheapest_total": None,
              "error": "Duffel request timed out"},
             {"origin": "MDW", "destination": "JFK", "depart_date": "2099-03-10",
-             "return_date": "2099-03-14", "offers": 1, "cheapest_total": 420.0, "error": None},
+             "return_date": "2099-03-14", "kind": "home", "offers": 1, "cheapest_total": 420.0, "error": None},
         ])
 
     def test_all_recoverable_failures_return_empty(self):
